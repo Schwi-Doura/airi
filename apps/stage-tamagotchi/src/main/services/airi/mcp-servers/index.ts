@@ -61,6 +61,7 @@ const defaultMcpConfig: ElectronMcpStdioConfigFile = {
 const toolNameSeparator = '::'
 const mcpRequestTimeoutMsec = 10_000
 const mcpRequestMaxTotalTimeoutMsec = 15_000
+const mcpToolCallDedupeMsec = 15_000
 const mcpTestStderrMaxChars = 16_000
 
 function stringifyError(error: unknown) {
@@ -103,6 +104,48 @@ function resolveFallbackToolName(toolName: string): string | undefined {
   return toolName.slice(lastSeparatorIndex + toolNameSeparator.length)
 }
 
+/**
+ * Normalizes MCP tool call arguments into a stable cache key segment.
+ *
+ * Before:
+ * - {"query":"hello","limit":10}
+ * - {"limit":10,"query":"hello"}
+ *
+ * After:
+ * - {"limit":10,"query":"hello"}
+ * - {"limit":10,"query":"hello"}
+ */
+function stringifyStableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(item => stringifyStableJson(item)).join(',')}]`
+  }
+
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+
+    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stringifyStableJson(entryValue)}`).join(',')}}`
+  }
+
+  return JSON.stringify(value) ?? 'null'
+}
+
+function createMcpToolCallCacheKey(payload: ElectronMcpCallToolPayload): string {
+  return `${payload.name}\n${stringifyStableJson(payload.arguments ?? {})}`
+}
+
+function deleteExpiredMcpToolCallCacheEntries(
+  cache: Map<string, { expiresAt: number, promise: Promise<ElectronMcpCallToolResult> }>,
+  now: number,
+) {
+  for (const [key, value] of cache) {
+    if (value.expiresAt <= now) {
+      cache.delete(key)
+    }
+  }
+}
+
 async function closeSession(session: McpServerSession) {
   try {
     await session.client.close()
@@ -116,6 +159,7 @@ export function createMcpStdioManager(): McpStdioManager {
   const log = useLogg('main/mcp-stdio').useGlobalConfig()
   const sessions = new Map<string, McpServerSession>()
   const runtimeStatuses = new Map<string, ElectronMcpStdioServerRuntimeStatus>()
+  const toolCallCache = new Map<string, { expiresAt: number, promise: Promise<ElectronMcpCallToolResult> }>()
   let updatedAt = Date.now()
 
   const setRuntimeStatus = (status: ElectronMcpStdioServerRuntimeStatus) => {
@@ -274,7 +318,7 @@ export function createMcpStdioManager(): McpStdioManager {
     return listResult.flat()
   }
 
-  const callTool = async (payload: ElectronMcpCallToolPayload): Promise<ElectronMcpCallToolResult> => {
+  const callToolOnce = async (payload: ElectronMcpCallToolPayload): Promise<ElectronMcpCallToolResult> => {
     const { serverName, toolName } = parseQualifiedToolName(payload.name)
     const session = sessions.get(serverName)
     if (!session) {
@@ -327,6 +371,29 @@ export function createMcpStdioManager(): McpStdioManager {
     }
 
     return normalized
+  }
+
+  const callTool = async (payload: ElectronMcpCallToolPayload): Promise<ElectronMcpCallToolResult> => {
+    const cacheKey = createMcpToolCallCacheKey(payload)
+    const now = Date.now()
+    deleteExpiredMcpToolCallCacheEntries(toolCallCache, now)
+
+    const cached = toolCallCache.get(cacheKey)
+    if (cached && cached.expiresAt > now) {
+      log.withFields({ toolName: payload.name }).debug('deduplicating repeated mcp tool call')
+      return cached.promise
+    }
+
+    const promise = callToolOnce(payload).catch((error) => {
+      toolCallCache.delete(cacheKey)
+      throw error
+    })
+    toolCallCache.set(cacheKey, {
+      expiresAt: now + mcpToolCallDedupeMsec,
+      promise,
+    })
+
+    return promise
   }
 
   const getRuntimeStatus = (): ElectronMcpStdioRuntimeStatus => {
