@@ -79,6 +79,35 @@ function toListVoicesOptions<T>(provider: VoiceProviderWithExtraOptions<T>, opti
   return voiceOptions
 }
 
+/**
+ * Normalizes MiMo ASR audio data URLs.
+ *
+ * Before:
+ * - "data:application/octet-stream;base64,UklGRg=="
+ * - "data:audio/webm;base64,UklGRg=="
+ *
+ * After:
+ * - "data:audio/wav;base64,UklGRg=="
+ */
+function normalizeMimoAsrAudioDataUrl(dataUrl: string): string {
+  const commaIndex = dataUrl.indexOf(',')
+  if (commaIndex === -1)
+    return dataUrl
+
+  const header = dataUrl.slice(0, commaIndex)
+  const payload = dataUrl.slice(commaIndex + 1)
+  const mimeType = header.split(';')[0]?.split(':')[1] || 'audio/wav'
+
+  if (mimeType === 'audio/wav' || mimeType === 'audio/mp3' || mimeType === 'audio/mpeg')
+    return dataUrl
+
+  return `data:audio/wav;base64,${payload}`
+}
+
+function normalizeMimoAsrModel(model: string | undefined): string {
+  return model === 'mimo-v2.5-asr' ? model : 'mimo-v2.5-asr'
+}
+
 export interface ProviderMetadata {
   id: string
   order?: number
@@ -1766,12 +1795,12 @@ export const useProvidersStore = defineStore('providers', () => {
       icon: 'i-simple-icons:xiaomi',
       defaultOptions: () => ({
         baseUrl: 'https://api.xiaomimimo.com/v1/',
-        model: 'mimo-v2-omni',
+        model: 'mimo-v2.5-asr',
       }),
       createProvider: async (config) => {
         const apiKey = (config.apiKey as string)?.trim() ?? ''
         const rawBaseUrl = `${((config.baseUrl as string) || 'https://api.xiaomimimo.com/v1/').replace(/\/+$/, '')}/`
-        const defaultModel = (config.model as string) || 'mimo-v2-omni'
+        const defaultModel = normalizeMimoAsrModel(config.model as string | undefined)
 
         const provider: TranscriptionProvider = {
           transcription: model => ({
@@ -1781,34 +1810,19 @@ export const useProvidersStore = defineStore('providers', () => {
             fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
               const formData = init?.body as FormData
               const file = formData?.get('file') as Blob | null
-              const modelName = (formData?.get('model') as string) || defaultModel
+              const modelName = normalizeMimoAsrModel((formData?.get('model') as string) || defaultModel)
 
               if (!file) {
                 throw new Error('No audio file provided for transcription.')
               }
 
               // Read the file as base64 data URI (works with both Blob and File)
-              const base64DataUri: string = await new Promise((resolve, reject) => {
+              const base64DataUri = normalizeMimoAsrAudioDataUrl(await new Promise<string>((resolve, reject) => {
                 const reader = new FileReader()
                 reader.onload = () => resolve(reader.result as string)
                 reader.onerror = () => reject(new Error('Failed to read audio file'))
                 reader.readAsDataURL(file)
-              })
-
-              // Extract format and base64 data from data URI
-              // data:audio/wav;base64,UklGR...
-              const mimeType = base64DataUri.split(';')[0]?.split(':')[1] || 'audio/wav'
-              const formatFromMime = mimeType.split('/')[1] || 'wav'
-              const base64Data = base64DataUri.split(',')[1]
-
-              // Map MIME sub-type to MiMo supported audio format
-              const audioFormat = formatFromMime === 'webm'
-                ? 'webm'
-                : formatFromMime === 'mp4'
-                  ? 'mp4'
-                  : formatFromMime === 'mpeg' || formatFromMime === 'mp3'
-                    ? 'mp3'
-                    : 'wav'
+              }))
 
               // MiMo audio understanding uses chat completions with input_audio,
               // not a dedicated transcription endpoint
@@ -1824,12 +1838,10 @@ export const useProvidersStore = defineStore('providers', () => {
                     {
                       role: 'user',
                       content: [
-                        { type: 'text', text: 'Transcribe the audio content.' },
                         {
                           type: 'input_audio',
                           input_audio: {
-                            data: base64Data,
-                            format: audioFormat,
+                            data: base64DataUri,
                           },
                         },
                       ],
@@ -1862,18 +1874,10 @@ export const useProvidersStore = defineStore('providers', () => {
       capabilities: {
         listModels: async () => [
           {
-            id: 'mimo-v2-omni',
-            name: 'MiMo V2 Omni',
+            id: 'mimo-v2.5-asr',
+            name: 'MiMo V2.5 ASR',
             provider: 'mimo-audio-transcription',
-            description: 'Omni-modal model with native audio understanding and speech-to-text',
-            contextLength: 256000,
-            deprecated: false,
-          },
-          {
-            id: 'mimo-v2.5',
-            name: 'MiMo V2.5',
-            provider: 'mimo-audio-transcription',
-            description: 'Latest omni-modal model with audio understanding, 1M context',
+            description: 'MiMo speech recognition model for wav and mp3 audio',
             contextLength: 1_000_000,
             deprecated: false,
           },
