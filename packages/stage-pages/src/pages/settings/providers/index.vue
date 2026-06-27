@@ -50,6 +50,7 @@ const {
   allChatProvidersMetadata,
   allAudioSpeechProvidersMetadata,
   allAudioTranscriptionProvidersMetadata,
+  allVisionProvidersMetadata,
 } = storeToRefs(providersStore)
 
 const allArtistryProvidersMetadata = computed<ProviderSourceCard[]>((): ProviderSourceCard[] => {
@@ -116,6 +117,13 @@ const providerBlocksConfig: ProviderBlockConfig[] = [
     providersRef: allChatProvidersMetadata,
   },
   {
+    id: 'vision',
+    icon: 'i-solar:eye-bold-duotone',
+    title: t('settings.pages.providers.categories.vision.title'),
+    description: t('settings.pages.providers.categories.vision.description'),
+    providersRef: allVisionProvidersMetadata,
+  },
+  {
     id: 'speech',
     icon: 'i-solar:user-speak-rounded-bold-duotone',
     title: t('settings.pages.providers.categories.speech.title'),
@@ -165,6 +173,8 @@ const providerBlocks = computed(() => {
     .map((block) => {
       const filteredProviders = block.providersRef.value
         .filter((p) => {
+          if (p.id === 'speech-noop')
+            return false
           if (filterPricing.value !== 'all' && p.pricing !== filterPricing.value)
             return false
           if (filterDeployment.value !== 'all' && p.deployment !== filterDeployment.value)

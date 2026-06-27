@@ -35,7 +35,7 @@ const providersStore = useProvidersStore()
 const speechStore = useSpeechStore()
 const airiCardStore = useAiriCardStore()
 const voicePacksStore = useVoicePacksStore()
-const { configuredSpeechProvidersMetadata } = storeToRefs(providersStore)
+const { allAudioSpeechProvidersMetadata, configuredSpeechProvidersMetadata } = storeToRefs(providersStore)
 const { activeCard } = storeToRefs(airiCardStore)
 const { packs: voicePacks, loading: isLoadingVoicePacks, error: voicePacksError } = storeToRefs(voicePacksStore)
 const {
@@ -71,6 +71,13 @@ const shouldShowVoicePackSection = computed(() =>
   supportsVoicePackSelection.value
   && (isLoadingVoicePacks.value || voicePacksError.value != null || voicePacks.value.length > 0),
 )
+
+const selectableSpeechProvidersMetadata = computed(() => {
+  return [
+    ...configuredSpeechProvidersMetadata.value.filter(metadata => metadata.id !== 'speech-noop'),
+    ...allAudioSpeechProvidersMetadata.value.filter(metadata => metadata.id === 'speech-noop'),
+  ]
+})
 
 function createVoicePackVoice(voicePack: VoicePackSnapshot): VoiceInfo {
   return {
@@ -153,6 +160,10 @@ watch(activeSpeechModel, async () => {
   if (activeSpeechProvider.value) {
     await speechStore.loadVoicesForProvider(activeSpeechProvider.value, activeSpeechModel.value || undefined)
   }
+})
+
+watch([activeSpeechProvider, activeSpeechModel, activeSpeechVoiceId], ([provider, model, voiceId]) => {
+  airiCardStore.updateActiveCardSpeech({ provider, model, voice_id: voiceId })
 })
 
 // Function to generate speech
@@ -333,7 +344,6 @@ function handleDeleteProvider(providerId: string) {
               <span>{{ t('settings.pages.modules.speech.sections.section.voice-pack.description') }}</span>
             </div>
           </div>
-
           <div v-if="isLoadingVoicePacks" :class="['flex items-center gap-2', 'text-sm text-neutral-400 dark:text-neutral-500']">
             <div i-solar:spinner-line-duotone class="animate-spin text-base" />
             <span>{{ t('settings.pages.modules.speech.sections.section.voice-pack.loading') }}</span>
@@ -386,11 +396,11 @@ function handleDeleteProvider(providerId: string) {
         </div>
         <div max-w-full>
           <fieldset
-            v-if="configuredSpeechProvidersMetadata.length > 0" flex="~ row gap-4"
-            min-w-0 of-x-auto scroll-smooth role="radiogroup"
+            v-if="selectableSpeechProvidersMetadata.length > 0" flex="~ row gap-4"
+            min-w-0 overflow-x-auto scroll-smooth role="radiogroup"
           >
             <RadioCardSimple
-              v-for="metadata in configuredSpeechProvidersMetadata"
+              v-for="metadata in selectableSpeechProvidersMetadata"
               :id="metadata.id"
               :key="metadata.id"
               v-model="activeSpeechProvider"
