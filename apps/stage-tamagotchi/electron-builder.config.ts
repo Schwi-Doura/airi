@@ -80,6 +80,20 @@ export default {
     // `node_modules/electron/dist/Electron.app` makes electron-builder deep-sign it and
     // fails on non-code resources (for example `locale.pak`) with timestamp/signing errors.
     '!**/node_modules/electron{,/**}',
+    // Workspace hoisting exposes build tools to electron-builder's file walk.
+    // The packaged app has no runtime import of these tools.
+    '!**/node_modules/@rolldown{,/**}',
+    '!**/node_modules/rolldown{,/**}',
+    '!**/node_modules/lightningcss{,/**}',
+    '!**/node_modules/lightningcss-*{,/**}',
+    '!**/node_modules/fsevents{,/**}',
+    // Transformers runs inside browser workers in the desktop app. Sharp is its
+    // Node-only image backend and has no packaged main-process consumer.
+    '!**/node_modules/sharp{,/**}',
+    '!**/node_modules/@img/sharp-*{,/**}',
+    // uiohook-napi loads the selected prebuild. Its bundled libuiohook C source is
+    // only used to build that binary and does not participate in runtime loading.
+    '!**/node_modules/uiohook-napi/libuiohook{,/**}',
     '!**/.vscode/*',
     '!src/**/*',
     '!**/node_modules/**/{CHANGELOG.md,README.md,README,readme.md,readme}',
@@ -96,10 +110,11 @@ export default {
   asar: true,
   asarUnpack: [
     '**/*.node',
+    '**/node_modules/@auv-js/cli-*/bin/**',
   ],
   extraResources: [
     {
-      from: '../../engines/stage-tamagotchi-godot/build/${os}',
+      from: '../../engines/stage-tamagotchi-godot/out/${os}',
       to: 'godot-stage',
       filter: ['**/*'],
     },
@@ -135,6 +150,7 @@ export default {
     runAfterFinish: true,
   },
   mac: {
+    entitlements: 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
     // NOTICE: Same channel rule as Windows. Keep `${arch}` here so generated metadata resolves
     // to architecture-specific update feeds on macOS (for example: `latest-x64-mac.yml`, `latest-arm64-mac.yml`).
@@ -206,14 +222,13 @@ export default {
       // - Linux arm64 -> `latest-arm64-linux-arm64.yml`
       channel: 'latest-${arch}',
     },
-    extendInfo: [
-      {
-        NSMicrophoneUsageDescription: 'AIRI requires microphone access for voice interaction',
-      },
-      {
-        NSCameraUsageDescription: 'AIRI requires camera access for vision understanding',
-      },
-    ],
+    extendInfo: {
+      NSAppleEventsUsageDescription: 'AIRI uses Automation to control apps for computer-use tasks.',
+      NSMicrophoneUsageDescription: 'AIRI requires microphone access for voice interaction',
+      NSSpeechRecognitionUsageDescription: 'AIRI uses Apple Speech to transcribe voice interactions on this device',
+      NSCameraUsageDescription: 'AIRI requires camera access for vision understanding',
+      NSBluetoothAlwaysUsageDescription: 'AIRI uses Bluetooth to read game controller input',
+    },
     // For self-publishing, testing, and distribution after modified the code without access to
     // an Apple Developer account, comment and uncomment the following 4 lines.
     // Later on when you obtained one, you can set up the necessary certificates and provisioning

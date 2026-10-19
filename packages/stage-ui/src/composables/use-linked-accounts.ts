@@ -1,10 +1,13 @@
 import type { Ref } from 'vue'
 
-import { computed, onMounted, shallowRef, watch } from 'vue'
+import type { SteamOAuthStartArgs, SteamOAuthStartResult } from '../libs/steam-auth-client'
+
+import { computed, onMounted, onScopeDispose, shallowRef, watch } from 'vue'
 
 /**
- * Provider key for the social-link / unlink endpoints. Matches the values
- * better-auth recognises on `/api/auth/link-social` and `/api/auth/unlink-account`.
+ * Provider key for the linked-account actions. OAuth2 providers go through
+ * better-auth's `/link-social`; Steam is OpenID 2.0 and is routed to the
+ * Steam client plugin's dedicated `linkSteam` method instead.
  */
 export type LinkedProviderId = 'google' | 'github' | (string & {})
 
@@ -47,6 +50,19 @@ export interface LinkedAccountsClient {
     data: { url?: string, redirect?: boolean, status?: boolean } | null
     error: { message?: string, status?: number } | null
   }>
+  /**
+   * Starts linking the current user to a Steam account.
+   *
+   * Steam's web login is OpenID 2.0, not OAuth2, so better-auth's
+   * `/link-social` can never resolve it as a `socialProviders` entry. The
+   * server steam plugin exposes `/link/steam` instead, and `steamClient()`
+   * surfaces that endpoint as this typed method — callers pass the raw
+   * client rather than wrapping `linkSocial`.
+   */
+  linkSteam: (args: SteamOAuthStartArgs) => Promise<{
+    data: SteamOAuthStartResult | null
+    error: { message?: string, status?: number } | null
+  }>
 }
 
 /**
@@ -76,6 +92,52 @@ export interface UseLinkedAccountsArgs {
    *          and hash-history routers without further configuration.
    */
   buildCallbackURL?: () => string
+  /**
+   * Analytics hook — fires exactly once per successful unlink, after the
+   * server confirmed the removal. Success is only knowable inside this
+   * composable (errors are swallowed into the `error` ref for the UI), so
+   * callers that need to observe it must hook here instead of inspecting
+   * refs after `unlink()` resolves.
+   */
+  onUnlinked?: (providerId: string) => void
+  /**
+   * Analytics hook — fires right before the OAuth consent redirect
+   * navigates away (or after a synchronous link succeeded). Link
+   * completion happens on the provider's site and is not observable
+   * from this page; treat this as "link attempt handed off".
+   */
+  onLinkStarted?: (providerId: string) => void
+}
+
+/**
+ * Runs `onReturn` when the window becomes active again, and returns a stop
+ * function.
+ *
+ * Electron blocks renderer navigation and opens the URL in the system
+ * browser instead, so the document survives the handoff and only the window
+ * state reports that the user came back. A browser unloads the document
+ * during the redirect, and the listeners die with it.
+ */
+function onWindowReturn(onReturn: () => void): () => void {
+  function stop() {
+    window.removeEventListener('focus', handleReturn)
+    document.removeEventListener('visibilitychange', handleVisible)
+  }
+
+  function handleReturn() {
+    stop()
+    onReturn()
+  }
+
+  function handleVisible() {
+    if (document.visibilityState === 'visible')
+      handleReturn()
+  }
+
+  window.addEventListener('focus', handleReturn)
+  document.addEventListener('visibilitychange', handleVisible)
+
+  return stop
 }
 
 /**
@@ -173,6 +235,7 @@ export function useLinkedAccounts(args: UseLinkedAccountsArgs) {
       if (apiError)
         throw new Error(apiError.message ?? 'unlinkAccount failed')
       message.value = args.messages.unlinked(providerName)
+      args.onUnlinked?.(providerId)
       await refresh()
     }
     catch (err) {
@@ -182,6 +245,31 @@ export function useLinkedAccounts(args: UseLinkedAccountsArgs) {
       inFlight.value = null
     }
   }
+
+  /**
+   * Removes the return listener of the pending handoff, when one exists.
+   */
+  let stopReturnListener: (() => void) | undefined
+
+  /**
+   * Reloads the rows when the user comes back from the provider's site.
+   *
+   * The consent step happens outside this document, so the row keeps its
+   * pre-link value until the server list is read again. A browser unloads
+   * the document during the redirect, and the listeners die with it.
+   */
+  function resyncOnWindowReturn() {
+    stopReturnListener?.()
+    stopReturnListener = onWindowReturn(() => {
+      stopReturnListener = undefined
+      void refresh()
+    })
+  }
+
+  onScopeDispose(() => {
+    stopReturnListener?.()
+    stopReturnListener = undefined
+  })
 
   async function link(providerId: LinkedProviderId, providerName: string) {
     if (inFlight.value)
@@ -193,14 +281,21 @@ export function useLinkedAccounts(args: UseLinkedAccountsArgs) {
 
     try {
       const callbackURL = args.buildCallbackURL ? args.buildCallbackURL() : window.location.href
-      const { data, error: apiError } = await args.client.linkSocial({
-        provider: providerId,
-        callbackURL,
-        errorCallbackURL: callbackURL,
-      })
+      // Steam is OpenID 2.0, not OAuth2 — the server steam plugin exposes a
+      // dedicated `/link/steam` endpoint, surfaced as `linkSteam` by the
+      // client plugin. Every other provider uses `/link-social`.
+      const result = providerId === 'steam'
+        ? await args.client.linkSteam({ callbackURL, errorCallbackURL: callbackURL })
+        : await args.client.linkSocial({ provider: providerId, callbackURL, errorCallbackURL: callbackURL })
+      const { data, error: apiError } = result
       if (apiError)
-        throw new Error(apiError.message ?? 'linkSocial failed')
+        throw new Error(apiError.message ?? 'link failed')
+      args.onLinkStarted?.(providerId)
       if (data?.url) {
+        // Register the return listener before the redirect. Electron blocks
+        // the redirect and opens the URL in the system browser instead, so
+        // this listener is the only signal that the user came back.
+        resyncOnWindowReturn()
         window.location.assign(data.url)
         return
       }
@@ -211,6 +306,11 @@ export function useLinkedAccounts(args: UseLinkedAccountsArgs) {
     catch (err) {
       error.value = args.describeError(err) || args.messages.linkFailed
       message.value = null
+    }
+    finally {
+      // Every path must leave the row usable. A browser unloads the document
+      // during the redirect, so this write only matters in runtimes that
+      // block the redirect.
       inFlight.value = null
     }
   }

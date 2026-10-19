@@ -3,16 +3,23 @@ import { Alert, ErrorContainer, RadioCardManySelect, RadioCardSimple } from '@pr
 import { useAnalytics } from '@proj-airi/stage-ui/composables'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
-import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
+import { useConsciousnessSettingsStore } from '@proj-airi/stage-ui/stores/modules/consciousness-settings'
+import { useProviderConfigStore } from '@proj-airi/stage-ui/stores/providers/config'
+import { useProviderStore } from '@proj-airi/stage-ui/stores/providers/provider'
+import { FieldCheckbox, FieldRange, SettingsCard } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import { watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
 
-const providersStore = useProvidersStore()
+const providersStore = useProviderStore()
+const providerStore = useProviderConfigStore()
 const airiCardStore = useAiriCardStore()
 const consciousnessStore = useConsciousnessStore()
-const { persistedChatProvidersMetadata, configuredProviders } = storeToRefs(providersStore)
+const consciousnessSettingsStore = useConsciousnessSettingsStore()
+const { configuredProviders } = storeToRefs(providerStore)
+const { moduleChatProvidersMetadata } = storeToRefs(providersStore)
+const { reasoning, temperatureEnabled, topPEnabled } = storeToRefs(consciousnessSettingsStore)
 const {
   activeProvider,
   activeModel,
@@ -20,44 +27,60 @@ const {
   modelSearchQuery,
   supportsModelListing,
   providerModels,
+  activeModelRequiresReasoning,
+  activeModelUsesProviderReasoningDefault,
   isLoadingActiveProviderModels,
   activeProviderModelError,
+  temperature,
+  topP,
 } = storeToRefs(consciousnessStore)
 
 const { t } = useI18n()
-const { trackProviderClick } = useAnalytics()
-
-watch(activeProvider, async (provider, oldProvider) => {
+const { trackModelSwitched, trackProviderClick } = useAnalytics()
+watch(activeProvider, async (provider) => {
   if (!provider)
     return
-
-  // Reset model when switching providers (but not on initial load)
-  if (oldProvider !== undefined && oldProvider !== provider) {
-    activeModel.value = ''
-  }
 
   await consciousnessStore.loadModelsForProvider(provider)
 }, { immediate: true })
 
-watch([activeProvider, activeModel], ([provider, model]) => {
-  airiCardStore.updateActiveCardConsciousness({ provider, model })
-})
+async function persistSelection() {
+  await airiCardStore.updateActiveCardConsciousness({ provider: activeProvider.value, model: activeModel.value })
+}
 
 function updateCustomModelName(value: string) {
   customModelName.value = value
 }
 
-function handleDeleteProvider(providerId: string) {
-  if (activeProvider.value === providerId) {
-    activeProvider.value = ''
-    activeModel.value = ''
-  }
-  providersStore.deleteProvider(providerId)
+async function selectModel(modelId: string) {
+  const previousModelId = activeModel.value
+  activeModel.value = modelId
+  await persistSelection()
+
+  if (previousModelId !== modelId)
+    trackModelSwitched(previousModelId || 'none', modelId)
+}
+
+async function handleDeleteProvider(providerId: string) {
+  await airiCardStore.clearProviderSelections(providerId)
+  await providersStore.deleteProvider(providerId)
+}
+
+async function updateReasoning(value: boolean) {
+  await consciousnessSettingsStore.setReasoning(value)
+}
+
+async function updateTemperatureEnabled(value: boolean) {
+  await consciousnessSettingsStore.setTemperatureEnabled(value)
+}
+
+async function updateTopPEnabled(value: boolean) {
+  await consciousnessSettingsStore.setTopPEnabled(value)
 }
 </script>
 
 <template>
-  <div bg="neutral-50 dark:[rgba(0,0,0,0.3)]" rounded-xl p-4 flex="~ col gap-4">
+  <SettingsCard>
     <div>
       <div flex="~ col gap-4">
         <div>
@@ -75,13 +98,13 @@ function handleDeleteProvider(providerId: string) {
           See also: https://stackoverflow.com/a/33737340
         -->
           <fieldset
-            v-if="persistedChatProvidersMetadata.length > 0"
+            v-if="moduleChatProvidersMetadata.length > 0"
             flex="~ row gap-4"
             min-w-0 overflow-x-auto scroll-smooth
             role="radiogroup"
           >
             <RadioCardSimple
-              v-for="metadata in persistedChatProvidersMetadata"
+              v-for="metadata in moduleChatProvidersMetadata"
               :id="metadata.id"
               :key="metadata.id"
               v-model="activeProvider"
@@ -89,6 +112,7 @@ function handleDeleteProvider(providerId: string) {
               :value="metadata.id"
               :title="metadata.localizedName || 'Unknown'"
               :description="metadata.localizedDescription"
+              @update:model-value="persistSelection"
               @click="trackProviderClick(metadata.id, 'consciousness')"
             >
               <template v-if="!metadata.id.startsWith('official-provider')" #topRight>
@@ -179,6 +203,7 @@ function handleDeleteProvider(providerId: string) {
               v-model="activeModel" type="text"
               class="w-full border border-neutral-300 rounded bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
               :placeholder="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.manual_model_placeholder')"
+              @input="persistSelection"
             >
           </div>
         </template>
@@ -197,8 +222,8 @@ function handleDeleteProvider(providerId: string) {
 
           <!-- Using the new RadioCardManySelect component - works with empty list for custom input -->
           <RadioCardManySelect
-            v-model="activeModel"
             v-model:search-query="modelSearchQuery"
+            :model-value="activeModel"
             :items="[]"
             :searchable="true"
             :allow-custom="true"
@@ -209,6 +234,7 @@ function handleDeleteProvider(providerId: string) {
             :custom-input-placeholder="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.custom_model_placeholder')"
             :expand-button-text="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.expand')"
             :collapse-button-text="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.collapse')"
+            @update:model-value="selectModel"
             @update:custom-value="updateCustomModelName"
           />
         </template>
@@ -216,8 +242,8 @@ function handleDeleteProvider(providerId: string) {
         <!-- Using the new RadioCardManySelect component -->
         <template v-else-if="providerModels.length > 0">
           <RadioCardManySelect
-            v-model="activeModel"
             v-model:search-query="modelSearchQuery"
+            :model-value="activeModel"
             :items="providerModels"
             :searchable="true"
             :allow-custom="true"
@@ -229,6 +255,7 @@ function handleDeleteProvider(providerId: string) {
             :expand-button-text="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.expand')"
             :collapse-button-text="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.collapse')"
             expanded-class="mb-12"
+            @update:model-value="selectModel"
             @update:custom-value="updateCustomModelName"
           />
         </template>
@@ -268,11 +295,78 @@ function handleDeleteProvider(providerId: string) {
             v-model="activeModel" type="text"
             class="w-full border border-neutral-300 rounded bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900"
             :placeholder="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.manual_model_placeholder')"
+            @input="persistSelection"
           >
         </div>
       </div>
     </div>
-  </div>
+
+    <section
+      v-if="activeProvider && activeModel"
+      :class="['flex', 'flex-col', 'gap-4', 'border-t', 'border-neutral-200', 'pt-4', 'dark:border-neutral-800']"
+    >
+      <h2 :class="['text-lg', 'text-neutral-500', 'md:text-2xl', 'dark:text-neutral-400']">
+        {{ t('settings.pages.modules.consciousness.sections.section.model-options.title') }}
+      </h2>
+
+      <div
+        v-if="activeModelUsesProviderReasoningDefault"
+        :class="['flex', 'flex-col', 'gap-1']"
+      >
+        <span class="text-sm font-medium">
+          {{ t('settings.pages.modules.consciousness.sections.section.model-options.thinking.label') }}
+        </span>
+        <span :class="['text-xs', 'text-neutral-500', 'dark:text-neutral-400']">
+          {{ t('settings.pages.modules.consciousness.sections.section.model-options.thinking.provider-default-description') }}
+        </span>
+      </div>
+      <FieldCheckbox
+        v-else
+        :model-value="reasoning || activeModelRequiresReasoning"
+        :label="t('settings.pages.modules.consciousness.sections.section.model-options.thinking.label')"
+        :description="activeModelRequiresReasoning ? t('settings.pages.modules.consciousness.sections.section.model-options.thinking.required-description') : undefined"
+        :disabled="activeModelRequiresReasoning"
+        @update:model-value="updateReasoning"
+      />
+    </section>
+  </SettingsCard>
+
+  <SettingsCard v-if="activeProvider" class="mt-4">
+    <div :class="['flex flex-col gap-4']">
+      <FieldCheckbox
+        :model-value="temperatureEnabled"
+        :label="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.temperature_enabled')"
+        :description="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.sampling_override_description')"
+        @update:model-value="updateTemperatureEnabled"
+      />
+      <FieldRange
+        v-if="temperatureEnabled"
+        v-model="temperature"
+        :label="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.temperature_label')"
+        :description="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.temperature_description')"
+        :min="0"
+        :max="2"
+        :step="0.1"
+        :format-value="value => value.toFixed(1)"
+      />
+      <FieldCheckbox
+        :model-value="topPEnabled"
+        :label="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.top_p_enabled')"
+        :description="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.sampling_override_description')"
+        @update:model-value="updateTopPEnabled"
+      />
+      <FieldRange
+        v-if="topPEnabled"
+        v-model="topP"
+        :label="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.top_p_label')"
+        :description="t('settings.pages.modules.consciousness.sections.section.provider-model-selection.top_p_description')"
+        :min="0"
+        :max="1"
+        :step="0.1"
+        :format-value="value => value.toFixed(1)"
+      />
+    </div>
+  </SettingsCard>
 
   <div
     v-motion

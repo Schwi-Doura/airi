@@ -1,10 +1,17 @@
-import type { JSONObject, ModelSettings } from 'pixi-live2d-display/cubism4'
+import type { CubismSpec, JSONObject, ModelSettings } from 'pixi-live2d-display/cubism4'
 
 import JSZip from 'jszip'
 
 import { Cubism4ModelSettings, FileLoader, Live2DFactory, ZipLoader } from 'pixi-live2d-display/cubism4'
 
-ZipLoader.zipReader = (data: Blob, _url: string) => JSZip.loadAsync(data)
+import { resolveLive2DModelControls } from '../controls/manifest'
+import { decodeZipFileName } from './decode-zip-filename'
+
+// Legacy/VTube-Studio archives often store entry names without the UTF-8 flag in a legacy
+// codepage; decode them so non-ASCII names (e.g. `手姿势切换.exp3.json`) don't become
+// mojibake. The same decoder must be used by `validateLive2DZip`, otherwise validation
+// sees mojibake paths and rejects archives before they reach this loader.
+ZipLoader.zipReader = (data: Blob, _url: string) => JSZip.loadAsync(data, { decodeFileName: decodeZipFileName })
 
 interface IgnoredArchivePathSegmentRule {
   matches: (segment: string) => boolean
@@ -23,6 +30,7 @@ function shouldIgnoreLive2DArchiveEntry(filePath: string): boolean {
 
 ZipLoader.createSettings = async (reader: JSZip) => {
   const filePaths = Object.keys(reader.files)
+    .filter(filePath => !shouldIgnoreLive2DArchiveEntry(filePath))
   const settings = await (async () => {
     const settingsFilePath = filePaths.find(file => isSettingsFile(file))
     if (!settingsFilePath) {
@@ -30,6 +38,8 @@ ZipLoader.createSettings = async (reader: JSZip) => {
     }
     return createModelSettings(await ZipLoader.readText(reader, settingsFilePath), settingsFilePath)
   })()
+
+  mergeDiscoveredControlsIntoSettings(settings, filePaths)
 
   // Extract CDI data from the zip if available
   try {
@@ -70,6 +80,33 @@ ZipLoader.createSettings = async (reader: JSZip) => {
   return settings
 }
 
+function mergeDiscoveredControlsIntoSettings(settings: ModelSettings, filePaths: string[]) {
+  if (!(settings instanceof Cubism4ModelSettings))
+    return
+
+  const existingExpressions = settings.expressions ?? []
+  const existingMotions = settings.motions ?? {}
+  const controls = resolveLive2DModelControls(settings.url, {
+    Expressions: existingExpressions,
+    Motions: existingMotions,
+  }, filePaths)
+
+  settings.expressions = controls.expressions.length > 0
+    ? controls.expressions.map(control => existingExpressions.find(expression => (
+        expression.Name === control.name && expression.File === control.fileName
+      )) ?? { Name: control.name, File: control.fileName })
+    : undefined
+
+  const motions: Record<string, CubismSpec.Motion[]> = {}
+  for (const control of controls.motions) {
+    const existingMotion = existingMotions[control.group]?.[control.index]
+    const group = motions[control.group] ?? []
+    group.push(existingMotion?.File === control.fileName ? existingMotion : { File: control.fileName })
+    motions[control.group] = group
+  }
+  settings.motions = Object.keys(motions).length > 0 ? motions : undefined
+}
+
 /**
  * Normalizes Live2D model settings JSON before upstream path resolution.
  *
@@ -96,6 +133,29 @@ function sanitizeModelSettingsText(text: string): string {
   return JSON.stringify(json)
 }
 
+/**
+ * Normalizes a resolved Live2D resource path to the decoded archive representation.
+ *
+ * @example
+ * normalizeLive2DArchivePath('Model%20Package/Avatar%20Model.moc3')
+ * // => 'Model Package/Avatar Model.moc3'
+ */
+function normalizeLive2DArchivePath(path: string): string {
+  try {
+    return decodeURI(path)
+  }
+  catch {
+    // Malformed percent escapes cannot be URI-decoded and therefore represent a literal archive path.
+    return path
+  }
+}
+
+function useArchivePathResolution(settings: ModelSettings): ModelSettings {
+  const resolveURL = settings.resolveURL.bind(settings)
+  settings.resolveURL = path => normalizeLive2DArchivePath(resolveURL(path))
+  return settings
+}
+
 function createModelSettings(text: string, url: string): ModelSettings {
   if (!text) {
     throw new Error(`Empty settings file: ${url}`)
@@ -109,7 +169,7 @@ function createModelSettings(text: string, url: string): ModelSettings {
     throw new Error('Unknown settings JSON')
   }
 
-  return runtime.createModelSettings(settingsJSON)
+  return useArchivePathResolution(runtime.createModelSettings(settingsJSON))
 }
 
 export function isSettingsFile(file: string) {
@@ -197,6 +257,8 @@ FileLoader.createSettings = async (files: File[]) => {
   const settingsUrl = settingsFile.webkitRelativePath || settingsFile.name
   const settingsText = await FileLoader.readText(settingsFile)
   const settings = createModelSettings(settingsText, settingsUrl)
+  mergeDiscoveredControlsIntoSettings(settings, files.map(file => file.webkitRelativePath || file.name).filter(path => !shouldIgnoreLive2DArchiveEntry(path)))
+
   Object.assign(settings, { _objectURL: URL.createObjectURL(settingsFile) })
 
   return settings

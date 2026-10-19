@@ -8,6 +8,12 @@ import { computed, reactive, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
+import {
+  trackLoginFailed,
+  trackLoginStarted,
+  trackLoginSucceeded,
+  trackSignupFormCompleted,
+} from '../modules/analytics'
 import { buildCurrentOriginAuthUiUrl } from '../modules/auth-ui-base'
 import {
   checkEmail,
@@ -16,7 +22,11 @@ import {
   signUpWithEmail,
 } from '../modules/email-password'
 import { getServerAuthBootstrapContext } from '../modules/server-auth-context'
-import { createServerSignInContext, requestSocialSignInRedirect } from '../modules/sign-in'
+import {
+  createServerSignInContext,
+  requestSocialSignInRedirect,
+  SocialSignInTimeoutError,
+} from '../modules/sign-in'
 
 type Step = 'identify' | 'password' | 'create'
 
@@ -80,6 +90,17 @@ const requestedProvider = computed<OAuthProvider | null>(() => {
   return provider as OAuthProvider
 })
 
+const requestedProviderName = computed(() => {
+  if (!requestedProvider.value)
+    return ''
+
+  return defaultSignInProviders.find(provider => provider.id === requestedProvider.value)?.name ?? requestedProvider.value
+})
+
+const isProviderHandoffActive = computed(() =>
+  requestedProvider.value !== null && pendingProvider.value === requestedProvider.value,
+)
+
 const stepHeading = computed(() => {
   if (step.value === 'password')
     return t('server.auth.signIn.step.password.heading')
@@ -127,14 +148,19 @@ async function handleProviderSelect(provider: OAuthProvider) {
       callbackURL: effectiveCallbackURL.value,
     })
 
+    trackLoginStarted({ method: provider })
     window.location.href = redirectUrl
   }
   catch (error) {
-    errorMessage.value = describeAuthError(error) || t('server.auth.signIn.error.fallback')
+    trackLoginFailed({ method: provider })
+    errorMessage.value = error instanceof SocialSignInTimeoutError
+      ? t('server.auth.signIn.error.providerTimeout')
+      : describeAuthError(error) || t('server.auth.signIn.error.fallback')
     pendingProvider.value = null
   }
 }
 
+/** Routes unverified users before password entry while preserving the original OIDC continuation. */
 async function handleIdentify(event: Event) {
   event.preventDefault()
   if (identifierLoading.value)
@@ -146,6 +172,17 @@ async function handleIdentify(event: Event) {
   try {
     const email = credentials.email.trim()
     const result = await checkEmail({ apiServerUrl, email })
+
+    if (result.exists && result.emailVerified === false) {
+      await router.push({
+        path: '/verify-email',
+        query: {
+          email,
+          ...(oidcContinueURL.value ? { continueURL: oidcContinueURL.value } : {}),
+        },
+      })
+      return
+    }
 
     if (result.exists && !result.hasPassword) {
       // User signed up via a social provider only. Stay on the identifier step
@@ -202,9 +239,11 @@ async function handleEmailSignIn(event: Event) {
     // After a successful credential sign-in better-auth has set the session
     // cookie. Bounce into the OIDC `/oauth2/authorize` flow (or wherever the
     // OIDC client originally pointed) so the upstream stage app gets its tokens.
+    trackLoginSucceeded({ method: 'email' })
     window.location.href = result.redirectURL ?? effectiveCallbackURL.value
   }
   catch (error) {
+    trackLoginFailed({ method: 'email' })
     errorMessage.value = describeAuthError(error) || t('server.auth.signIn.error.fallback')
   }
   finally {
@@ -237,6 +276,7 @@ async function handleEmailSignUp(event: Event) {
     })
 
     if (result.requiresVerification) {
+      trackSignupFormCompleted({ source: 'email', requires_verification: true })
       await router.push({
         path: '/verify-email',
         query: {
@@ -249,6 +289,7 @@ async function handleEmailSignUp(event: Event) {
 
     // Verification disabled at server config: session is live, fall through
     // to the OIDC continuation just like sign-in.
+    trackSignupFormCompleted({ source: 'email', requires_verification: false })
     window.location.href = effectiveCallbackURL.value
   }
   catch (error) {
@@ -262,6 +303,28 @@ async function handleEmailSignUp(event: Event) {
 
 <template>
   <main
+    v-if="isProviderHandoffActive"
+    :class="[
+      'min-h-screen flex flex-col items-center justify-center px-6 py-10 font-cuteen',
+    ]"
+  >
+    <section
+      :class="['flex flex-col items-center text-center']"
+      role="status"
+      aria-live="polite"
+    >
+      <div
+        :class="['i-svg-spinners:ring-resize mb-5 h-9 w-9 text-neutral-600 dark:text-neutral-300']"
+        aria-hidden="true"
+      />
+      <div :class="['text-lg font-semibold']">
+        {{ t('server.auth.signIn.message.redirecting', { provider: requestedProviderName }) }}
+      </div>
+    </section>
+  </main>
+
+  <main
+    v-else
     :class="[
       'min-h-screen flex flex-col items-center justify-center px-6 py-10 font-cuteen',
     ]"
@@ -402,7 +465,7 @@ async function handleEmailSignUp(event: Event) {
           v-for="provider in defaultSignInProviders"
           :key="provider.id"
           :class="['w-full', 'py-2', 'flex', 'items-center', 'justify-center']"
-          :icon="provider.id === 'google' ? 'i-simple-icons-google' : provider.id === 'github' ? 'i-simple-icons-github' : undefined"
+          :icon="provider.icon"
           :loading="pendingProvider === provider.id"
           @click="handleProviderSelect(provider.id)"
         >

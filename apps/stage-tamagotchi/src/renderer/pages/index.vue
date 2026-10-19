@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import type { ModelSettingsRuntimeSnapshot } from '@proj-airi/stage-ui/components/scenarios/settings/model-settings/runtime'
 
-import type { ModelSettingsRuntimeChannelEvent } from '../../shared/model-settings-runtime'
+import type { FullscreenGlideCurve, FullscreenMode } from '../../shared/eventa'
 
-import workletUrl from '@proj-airi/stage-ui/workers/vad/process.worklet?worker&url'
-
-import { tryCatch } from '@moeru/std'
+import { errorMessageFrom } from '@moeru/std'
 import { electron } from '@proj-airi/electron-eventa'
 import {
   useElectronEventaInvoke,
@@ -14,54 +12,78 @@ import {
   useElectronMouseInWindow,
   useElectronRelativeMouse,
 } from '@proj-airi/electron-vueuse'
-import { IS_DEV } from '@proj-airi/stage-shared'
 import { useModelStore, useThreeSceneIsTransparentAtPoint } from '@proj-airi/stage-ui-three'
-import { HoloCoupon } from '@proj-airi/stage-ui/components'
+import { HearingStatus, HoloCoupon } from '@proj-airi/stage-ui/components'
 import {
   createEmptyModelSettingsRuntimeSnapshot,
   resolveComponentStateToRuntimePhase,
 } from '@proj-airi/stage-ui/components/scenarios/settings/model-settings/runtime'
 import { WidgetStage } from '@proj-airi/stage-ui/components/scenes'
-import { useAudioRecorder } from '@proj-airi/stage-ui/composables/audio/audio-recorder'
 import { useCanvasPixelIsTransparentAtPoint } from '@proj-airi/stage-ui/composables/canvas-alpha'
-import { useVAD } from '@proj-airi/stage-ui/stores/ai/models/vad'
-import { useHearingSpeechInputPipeline } from '@proj-airi/stage-ui/stores/modules/hearing'
+import { useVoiceListening } from '@proj-airi/stage-ui/composables/voice-input-mode'
+import { FULLSCREEN_WORKSPACE_FLAG } from '@proj-airi/stage-ui/libs/feature-flags'
+import { useFeatureFlagsStore } from '@proj-airi/stage-ui/stores/feature-flags'
 import { useOnboardingStore } from '@proj-airi/stage-ui/stores/onboarding'
-import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
-import { refDebounced, useBroadcastChannel } from '@vueuse/core'
+import { useSettings } from '@proj-airi/stage-ui/stores/settings'
+import { useVoiceStore } from '@proj-airi/stage-ui/stores/voice'
+import { refDebounced } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
-import { computed, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onScopeDispose, ref, shallowRef, toRef, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { toast } from 'vue-sonner'
 
+import FullscreenBackdrop from '../components/fullscreen/fullscreen-backdrop.vue'
+import FullscreenOverlay from '../components/fullscreen/fullscreen-overlay.vue'
+import AuthStatusIsland from '../components/stage-islands/auth-status-island.vue'
+import ControlsIslandRoot from '../components/stage-islands/controls-island/controls-island-root.vue'
 import ControlsIsland from '../components/stage-islands/controls-island/index.vue'
 import ResourceStatusIsland from '../components/stage-islands/resource-status-island/index.vue'
-import StatusIsland from '../components/stage-islands/status-island/index.vue'
 
-import { electronOpenOnboarding } from '../../shared/eventa'
-import { modelSettingsRuntimeSnapshotChannelName } from '../../shared/model-settings-runtime'
-import { useChatSyncStore } from '../stores/chat-sync'
+import { defaultFullscreenSurface, electronAppIsWayland, electronFullscreenExit, electronFullscreenSetMode, electronMainWindowEnterFullscreen, electronMainWindowGetFullscreenState, electronMainWindowSetFullscreenBounds, electronOpenInlay, electronOpenOnboarding, electronOpenSettings } from '../../shared/eventa'
+import { fullscreenHostPages, fullscreenSurfaceOf } from '../components/fullscreen/surfaces'
+import { useModelSettingsRuntimeOwner } from '../composables/model-settings-runtime-owner'
+import { useFullscreenHost } from '../composables/use-fullscreen-host'
+import { provideFullscreenLayout } from '../composables/use-fullscreen-layout'
+import { usePushToTalkShortcut } from '../composables/use-push-to-talk-shortcut'
+import { useScreenAmbientLight } from '../composables/use-screen-ambient-light'
+import { stageOpaqueAttribute } from '../composables/use-stage-painted-mask'
 import { useControlsIslandStore } from '../stores/controls-island'
+import { useFullscreenStore } from '../stores/fullscreen'
 import { useStageWindowLifecycleStore } from '../stores/stage-window-lifecycle'
+import { useToolSelectionStore } from '../stores/tools'
+import { resolveFadeOnHoverInteraction } from '../utils/fade-on-hover'
 import { shouldSampleStageTransparency } from '../utils/stage-three-transparency'
 
+const hearingStatusElement = ref<HTMLElement>()
+const authStatusElement = ref<HTMLElement>()
+const { isOutside: outsideHearingStatus } = useElectronMouseInElement(hearingStatusElement)
+const { isOutside: outsideAuthStatus } = useElectronMouseInElement(authStatusElement)
 const controlsIslandRef = ref<InstanceType<typeof ControlsIsland>>()
-const statusIslandRef = ref<InstanceType<typeof StatusIsland>>()
+const controlsIslandInteractionActive = shallowRef(false)
 const widgetStageRef = ref<InstanceType<typeof WidgetStage>>()
+// The stage canvas alpha tells the sampler which pixels of the window AIRI
+// paints, so it can read the desktop showing through behind the character.
+useScreenAmbientLight({ stageCanvas: () => widgetStageRef.value?.canvasElement() })
 const stageCanvas = toRef(() => widgetStageRef.value?.canvasElement())
 const componentStateStage = ref<'pending' | 'loading' | 'mounted'>('pending')
 const stageMounted = computed(() => componentStateStage.value === 'mounted')
-const isLoading = computed(() => !stageMounted.value)
+// A stage that fails to render never reaches `mounted`, so the loading overlay would
+// keep covering the error surface. The error event ends the wait instead.
+const stageError = shallowRef<Error>()
+const isLoading = computed(() => !stageMounted.value && !stageError.value)
 
 const isIgnoringMouseEvents = ref(false)
 const shouldFadeOnCursorWithin = ref(false)
 
 const onboardingStore = useOnboardingStore()
 const openOnboarding = useElectronEventaInvoke(electronOpenOnboarding)
+const openSettings = useElectronEventaInvoke(electronOpenSettings)
 
 const { isOutside: isOutsideWindow } = useElectronMouseInWindow()
-const { isOutside } = useElectronMouseInElement(controlsIslandRef)
-const { isOutside: isOutsideStatusIsland } = useElectronMouseInElement(statusIslandRef)
+// The island already pairs its cursor signal with a DOM one and owns that decision, so
+// read its answer rather than mounting a second set of listeners over the same element.
+const isOutside = computed(() => controlsIslandRef.value?.isOutside ?? true)
 const isOutsideFor250Ms = refDebounced(isOutside, 250)
-const isOutsideStatusIslandFor250Ms = refDebounced(isOutsideStatusIsland, 250)
 const { x: relativeMouseX, y: relativeMouseY } = useElectronRelativeMouse()
 // NOTICE: In real-world use cases of Fade on Hover feature, the cursor may move around the edge of the
 // model rapidly, causing flickering effects when checking pixel transparency strictly.
@@ -78,44 +100,108 @@ const isTransparentByThree = useThreeSceneIsTransparentAtPoint(
   relativeMouseY,
   { regionRadius: 25 },
 )
+const isTransparentByPixelsExact = useCanvasPixelIsTransparentAtPoint(
+  stageCanvas,
+  relativeMouseX,
+  relativeMouseY,
+)
+const isTransparentByThreeExact = useThreeSceneIsTransparentAtPoint(
+  widgetStageRef,
+  relativeMouseX,
+  relativeMouseY,
+)
 
 const settingsStore = useSettings()
-const { stageModelRenderer, stageModelSelectedUrl } = storeToRefs(settingsStore)
+const { alwaysOnTop, stageModelRenderer, stageModelSelectedUrl } = storeToRefs(settingsStore)
+function handleStageRenderError(error: Error) {
+  stageError.value = error
+}
+// The stage reports every reset, including a retry that changes no setting, so the
+// overlay returns during the new load instead of hiding behind a stale error.
+function handleStageReset() {
+  stageError.value = undefined
+}
 const modelStore = useModelStore()
 const { sceneMutationLocked, scenePhase } = storeToRefs(modelStore)
 const { stagePaused } = storeToRefs(useStageWindowLifecycleStore())
 const { fadeOnHoverEnabled } = storeToRefs(useControlsIslandStore())
 const modelSettingsRuntimeOwnerInstanceId = `tamagotchi-main-stage:${Math.random().toString(36).slice(2, 10)}`
-const { data: modelSettingsRuntimeChannelEvent, post: postModelSettingsRuntimeChannelEvent } = useBroadcastChannel<ModelSettingsRuntimeChannelEvent, ModelSettingsRuntimeChannelEvent>({ name: modelSettingsRuntimeSnapshotChannelName })
 const shouldUseThreeTransparencyHitTest = computed(() => shouldSampleStageTransparency({
   componentState: componentStateStage.value,
-  fadeOnHoverEnabled: fadeOnHoverEnabled.value,
   stageModelRenderer: stageModelRenderer.value,
   stagePaused: stagePaused.value,
 }))
+/**
+ * Drives the Auto Hide fade. `true` means "do not fade", so any case without a usable
+ * region sampler reports `true` and the stage stays visible.
+ */
 const isTransparent = computed(() => {
   if (stagePaused.value || componentStateStage.value !== 'mounted' || !fadeOnHoverEnabled.value)
     return true
 
+  // TresCanvas leaves preserveDrawingBuffer off, so VRM's canvas reads back empty and
+  // has to sample an offscreen render target. Every other renderer keeps its last frame
+  // readable, and a renderer with no canvas samples nothing and stays visible.
   if (stageModelRenderer.value === 'vrm')
     return shouldUseThreeTransparencyHitTest.value ? isTransparentByThree.value : true
 
-  if (stageModelRenderer.value === 'live2d')
-    return isTransparentByPixels.value
+  return isTransparentByPixels.value
+})
+/**
+ * Whether the cursor sits on the stage canvas rather than on interface drawn over it.
+ *
+ * The pixel test can only answer for the canvas, and the canvas draws nothing beneath a
+ * DOM overlay, so a button, a toast or a portaled panel floating over blank canvas
+ * would read as empty space and lose its clicks. Ask the document what is really under
+ * the cursor instead. This is a hit test, not an event, so it still answers while the
+ * window is click-through.
+ */
+const isPointerOverStageCanvas = computed(() =>
+  document.elementFromPoint(relativeMouseX.value, relativeMouseY.value) === stageCanvas.value,
+)
+/**
+ * Drives native click-through, and runs whether or not Auto Hide is on.
+ *
+ * `true` surrenders the pixel to the app below, the opposite sense of
+ * {@link isTransparent}. The samplers report a missing canvas as transparent, so the
+ * guards below are what keep the window interactive when nothing can answer. Godot
+ * lands there: it draws a DOM panel and exposes no canvas to read.
+ */
+const isTransparentForMouseEvents = computed(() => {
+  if (stagePaused.value || componentStateStage.value !== 'mounted')
+    return false
 
-  return true
+  // Load-bearing, not a convenience. A scene swap unmounts the canvas while the state
+  // still reads mounted, and both samplers answer "transparent" without one, which would
+  // hand the whole window away, character included, until the next scene reports itself.
+  if (!stageCanvas.value)
+    return false
+
+  if (!isPointerOverStageCanvas.value)
+    return false
+
+  if (stageModelRenderer.value === 'vrm')
+    return shouldUseThreeTransparencyHitTest.value ? isTransparentByThreeExact.value : false
+
+  return isTransparentByPixelsExact.value
 })
 
 const { isNearAnyBorder: isAroundWindowBorder } = useElectronMouseAroundWindowBorder({ threshold: 10 })
 const isAroundWindowBorderFor250Ms = refDebounced(isAroundWindowBorder, 250)
 
+// The controls Island hides while the cursor is away from the window. The edge
+// band counts as the window, because a resize holds the cursor there. On
+// Wayland the cursor signal can stick outside (#2521), so the Island stays.
+const isWayland = ref(true)
+// A failed probe keeps `true`, so the Island stays shown as before this feature.
+useElectronEventaInvoke(electronAppIsWayland)()
+  .then(value => isWayland.value = value)
+  .catch(error => console.warn('[Main Page] Failed to detect Wayland; the controls Island stays shown:', errorMessageFrom(error)))
+const cursorAwayFromWindow = computed(() => !isWayland.value && isOutsideWindow.value && !isAroundWindowBorder.value)
+
 const setIgnoreMouseEvents = useElectronEventaInvoke(electron.window.setIgnoreMouseEvents)
 
-const { pause, resume } = watch(isTransparent, (transparent) => {
-  shouldFadeOnCursorWithin.value = fadeOnHoverEnabled.value && !transparent
-}, { immediate: true })
-
-const hearingDialogOpen = computed(() => controlsIslandRef.value?.hearingDialogOpen ?? false)
+const controlsOverlayActive = computed(() => controlsIslandRef.value?.overlayActive ?? false)
 
 const modelSettingsRuntimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() => {
   const hasModel = !!stageModelSelectedUrl.value
@@ -162,6 +248,34 @@ const modelSettingsRuntimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() =
     })
   }
 
+  if (stageModelRenderer.value === 'tachie') {
+    const phase = resolveComponentStateToRuntimePhase(componentStateStage.value, { hasModel })
+
+    return createEmptyModelSettingsRuntimeSnapshot({
+      ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
+      renderer: 'tachie',
+      phase,
+      controlsLocked: hasModel ? phase !== 'mounted' : false,
+      previewAvailable: hasModel,
+      canCapturePreview: false,
+      updatedAt: Date.now(),
+    })
+  }
+
+  if (stageModelRenderer.value === 'mmd') {
+    const phase = resolveComponentStateToRuntimePhase(componentStateStage.value, { hasModel })
+
+    return createEmptyModelSettingsRuntimeSnapshot({
+      ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
+      renderer: 'mmd',
+      phase,
+      controlsLocked: hasModel ? phase !== 'mounted' : false,
+      previewAvailable: hasModel,
+      canCapturePreview: false,
+      updatedAt: Date.now(),
+    })
+  }
+
   if (stageModelRenderer.value === 'godot') {
     return createEmptyModelSettingsRuntimeSnapshot({
       ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
@@ -180,280 +294,385 @@ const modelSettingsRuntimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() =
   })
 })
 
-watch([isOutsideFor250Ms, isOutsideStatusIslandFor250Ms, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, hearingDialogOpen, fadeOnHoverEnabled, stagePaused], () => {
-  if (stagePaused.value) {
+const fullscreen = useFullscreenStore()
+const { phase: fullscreenPhase, active: fullscreenActive } = storeToRefs(fullscreen)
+const router = useRouter()
+useFullscreenHost()
+const enterFullscreenWindow = useElectronEventaInvoke(electronMainWindowEnterFullscreen)
+const setFullscreenWindowBounds = useElectronEventaInvoke(electronMainWindowSetFullscreenBounds)
+const exitFullscreenWindow = useElectronEventaInvoke(electronFullscreenExit)
+const getFullscreenWindowState = useElectronEventaInvoke(electronMainWindowGetFullscreenState)
+const setFullscreenMode = useElectronEventaInvoke(electronFullscreenSetMode)
+const featureFlags = useFeatureFlagsStore()
+
+/** The mode that the user chose: the experiment turns it on, and its variant names the window. */
+const fullscreenMode = computed<FullscreenMode>(() => {
+  if (!featureFlags.isEnabled(FULLSCREEN_WORKSPACE_FLAG.key))
+    return 'off'
+  return featureFlags.variantOf(FULLSCREEN_WORKSPACE_FLAG.key) === 'multi-window' ? 'multi-window' : 'single-window'
+})
+
+// The choice lives in page storage, so the page reports it. The main process moves what the mode shows to the window
+// that the new mode names.
+watch(fullscreenMode, async (mode) => {
+  try {
+    await setFullscreenMode({ mode })
+  }
+  catch (error) {
+    console.error('[Main window fullscreen] Failed to report the mode:', errorMessageFrom(error))
+  }
+}, { immediate: true })
+
+/**
+ * The stage in fullscreen mode. It keeps one size in window pixels, so the canvas resizes only when the mode starts
+ * and ends. A transform anchored at the top left scales it down to the size it had in the small window.
+ */
+interface StageLayout { width: number, height: number, offsetX: number, scale: number }
+const stageLayout = shallowRef<StageLayout>()
+/**
+ * The area of the fullscreen mode, from the top left of the window. It clips the backdrop, the island, and the surface,
+ * which keep their final layout, so they show as the area grows.
+ */
+const fullscreenArea = shallowRef<{ width: number, height: number }>()
+/** The direction that the stage and the area move in now. `false` sets them at once. */
+const fullscreenMotion = shallowRef<'open' | 'close' | false>(false)
+type StageLayoutBounds = Awaited<ReturnType<typeof enterFullscreenWindow>>['bounds']
+
+/** A part of the fullscreen transition. The window glide and the CSS transitions use the same curve. */
+interface FullscreenMotion { duration: number, curve: FullscreenGlideCurve }
+/**
+ * The parts of the fullscreen transition. `height` also moves the window and scales the stage, so the bottom edge of
+ * the stage and the area stays in place. `width` is slower, so the area fills the height first. Closing runs every part
+ * along `close`, an ease-out curve that overshoots a little, so the character lands with a slight spring.
+ */
+const FULLSCREEN_MOTION = {
+  height: { duration: 350, curve: [0.25, 1, 0.5, 1] },
+  width: { duration: 500, curve: [0.33, 1, 0.68, 1] },
+  close: { duration: 400, curve: [0.34, 1.1, 0.64, 1] },
+} satisfies Record<string, FullscreenMotion>
+/** The surface width, its drag, and the place of the stage beside the surface. The overlay reads the same layout. */
+const fullscreenLayout = provideFullscreenLayout()
+
+// The canvas keeps its size while the surface width changes, and the open stage follows by moving at once. A change
+// during a transition waits, because it would cut the transition that the mode waits for.
+watch(fullscreenLayout.stageOffset, (offsetX) => {
+  if (fullscreenPhase.value === 'open' && !fullscreenMotion.value && stageLayout.value)
+    stageLayout.value = { ...stageLayout.value, offsetX }
+})
+
+/** The bounds of the main window outside fullscreen mode, the work area, and the stage size in it. */
+function planFor(home: StageLayoutBounds, workArea: StageLayoutBounds) {
+  return { home, workArea, stage: fullscreenLayout.stageSizeIn(workArea) }
+}
+
+/** The CSS transitions of `parts` in the current direction, and none while nothing moves. */
+function motionTransitions(...parts: [property: string, part: FullscreenMotion][]) {
+  const direction = fullscreenMotion.value
+  if (!direction)
+    return []
+  return parts.map(([property, part]) => {
+    const { duration, curve } = direction === 'open' ? part : FULLSCREEN_MOTION.close
+    return `${property} ${duration}ms cubic-bezier(${curve.join(', ')})`
+  })
+}
+
+const stageFrameStyle = computed(() => {
+  const layout = stageLayout.value
+  if (!layout)
+    return undefined
+  return {
+    position: 'fixed' as const,
+    left: '0px',
+    top: '0px',
+    width: `${layout.width}px`,
+    height: `${layout.height}px`,
+    transformOrigin: '0 0',
+    transform: `translateX(${layout.offsetX}px) scale(${layout.scale})`,
+    transition: motionTransitions(['transform', FULLSCREEN_MOTION.height]).join(', ') || 'none',
+  }
+})
+
+const fullscreenAreaStyle = computed(() => {
+  const area = fullscreenArea.value
+  if (!area)
+    return undefined
+  return {
+    width: `${area.width}px`,
+    height: `${area.height}px`,
+    transition: motionTransitions(['width', FULLSCREEN_MOTION.width], ['height', FULLSCREEN_MOTION.height]).join(', ') || 'none',
+  }
+})
+
+/** The stage at its fullscreen size, drawn as large as it was in the small window, with the character centered as before. */
+function homeStageLayout(plan: ReturnType<typeof planFor>): StageLayout {
+  const scale = plan.home.height / plan.stage.height
+  return { ...plan.stage, scale, offsetX: (plan.home.width - plan.stage.width * scale) / 2 }
+}
+
+const stageFrameElement = ref<HTMLElement>()
+const fullscreenAreaElement = ref<HTMLElement>()
+
+/** Starts the next transition from the layout that the stage and the area have now, by making the browser commit it first. */
+function commitFullscreenLayout() {
+  stageFrameElement.value?.getBoundingClientRect()
+  fullscreenAreaElement.value?.getBoundingClientRect()
+}
+
+/** Resolves when every transition that the latest layout change started on the stage and the area has ended. */
+async function fullscreenTransitionsEnded() {
+  await nextTick()
+  const animations = [stageFrameElement.value, fullscreenAreaElement.value].flatMap(element => element?.getAnimations() ?? [])
+  await Promise.all(animations.map(animation => animation.finished))
+}
+
+/**
+ * Opens the fullscreen mode. A resize keeps the window's top left corner, and a glide keeps its size, so the content
+ * never shifts against the window and the stage never blinks. The islands hide as soon as the mode starts.
+ *
+ * 1. The stage takes its fullscreen size, scaled to look unchanged, and the window grows from its top left to the size
+ *    of the work area. The area starts with no width, so nothing on screen changes.
+ * 2. The window glides to the top left of the work area while the stage and the area grow along the same curve. The
+ *    area opens to the right along a slower curve and shows the island and the surface.
+ *
+ * The mode ends fully open or fully closed: any failed step rolls everything back through {@link leaveFullscreen}.
+ */
+async function expandToFullscreen() {
+  try {
+    const { bounds, workArea } = await enterFullscreenWindow()
+    const plan = planFor(bounds, workArea)
+    const { height } = FULLSCREEN_MOTION
+
+    fullscreenMotion.value = false
+    stageLayout.value = homeStageLayout(plan)
+    fullscreenArea.value = { width: 0, height: bounds.height }
+    await setFullscreenWindowBounds({ bounds: { x: bounds.x, y: bounds.y, width: workArea.width, height: workArea.height } })
+
+    commitFullscreenLayout()
+    // The island mounted with the area. Its place limits the surface width, so the stage reads it before it moves.
+    fullscreenLayout.measureIsland()
+    fullscreenMotion.value = 'open'
+    stageLayout.value = { ...plan.stage, scale: 1, offsetX: fullscreenLayout.stageOffsetIn(workArea.width) }
+    fullscreenArea.value = { width: workArea.width, height: workArea.height }
+    await Promise.all([
+      setFullscreenWindowBounds({ bounds: workArea, duration: height.duration, curve: height.curve }),
+      fullscreenTransitionsEnded(),
+    ])
+    // Nothing moves now, so the stage follows a drag of the surface edge at once. It also takes the width of a drag
+    // that ended during the transition.
+    fullscreenMotion.value = false
+    stageLayout.value = { ...plan.stage, scale: 1, offsetX: fullscreenLayout.stageOffsetIn(workArea.width) }
+    fullscreen.settle('open')
+  }
+  catch (error) {
+    console.error('[Main window fullscreen] Failed to open:', errorMessageFrom(error))
+    await leaveFullscreen(`opening failed: ${errorMessageFrom(error) ?? 'unknown error'}`)
+  }
+}
+
+/**
+ * Closes the fullscreen mode. The area closes to the left while the window glides back and the stage shrinks, all
+ * along the closing curve, then the window shrinks from its top left. The stage returns to its normal layout only
+ * after that, because its scaled layout fits both window sizes.
+ */
+async function collapseFromFullscreen() {
+  try {
+    // The main process keeps the bounds that the window returns to, and they can change while the mode is open.
+    const state = await getFullscreenWindowState()
+    if (state) {
+      const plan = planFor(state.home, state.workArea)
+      const { close } = FULLSCREEN_MOTION
+      commitFullscreenLayout()
+      fullscreenMotion.value = 'close'
+      stageLayout.value = homeStageLayout(plan)
+      fullscreenArea.value = { width: 0, height: plan.home.height }
+      await Promise.all([
+        setFullscreenWindowBounds({ bounds: { ...plan.workArea, x: plan.home.x, y: plan.home.y }, ...close }),
+        fullscreenTransitionsEnded(),
+      ])
+
+      await setFullscreenWindowBounds({ bounds: plan.home })
+    }
+    await exitFullscreenWindow({ reason: 'the user closed it' })
+    clearFullscreenLayout()
+    fullscreen.settle('closed')
+  }
+  catch (error) {
+    console.error('[Main window fullscreen] Failed to close:', errorMessageFrom(error))
+    await leaveFullscreen(`closing failed: ${errorMessageFrom(error) ?? 'unknown error'}`)
+  }
+}
+
+/** Returns the stage to its normal layout and unmounts the area. */
+function clearFullscreenLayout() {
+  fullscreenMotion.value = false
+  stageLayout.value = undefined
+  fullscreenArea.value = undefined
+}
+
+/**
+ * The way out after any failed step: the window and the stage return to their state before the mode, and it closes.
+ * The main process restores its bounds and always on top, and does nothing when it was never in fullscreen mode.
+ */
+async function leaveFullscreen(reason: string) {
+  clearFullscreenLayout()
+  try {
+    await exitFullscreenWindow({ reason })
+  }
+  catch (error) {
+    console.error('[Main window fullscreen] Failed to restore the window:', errorMessageFrom(error))
+  }
+  finally {
+    fullscreen.settle('closed')
+  }
+}
+
+/**
+ * Shows the fullscreen mode again when the page loads while the main window is still in it, after a reload for example.
+ * The window covers the work area again, because a reload can stop it in the middle of a glide.
+ */
+async function resumeFullscreen() {
+  try {
+    const state = await getFullscreenWindowState()
+    // The window decides. A route that names a surface while the window is not in the mode goes back to the main page.
+    if (!state) {
+      if (fullscreenSurfaceOf(router.currentRoute.value.path))
+        await router.replace(fullscreenHostPages['main-window'])
+      return
+    }
+    const plan = planFor(state.home, state.workArea)
+    fullscreenMotion.value = false
+    stageLayout.value = { ...plan.stage, scale: 1, offsetX: fullscreenLayout.stageOffsetIn(plan.workArea.width) }
+    fullscreenArea.value = { width: plan.workArea.width, height: plan.workArea.height }
+    await setFullscreenWindowBounds({ bounds: plan.workArea })
+    await fullscreen.resume(state.surface ?? defaultFullscreenSurface)
+  }
+  catch (error) {
+    console.error('[Main window fullscreen] Failed to show the mode again:', errorMessageFrom(error))
+    await leaveFullscreen(`showing the mode again after a reload failed: ${errorMessageFrom(error) ?? 'unknown error'}`)
+  }
+}
+onMounted(() => void resumeFullscreen())
+
+watch(fullscreenPhase, (phase) => {
+  if (phase === 'expanding')
+    void expandToFullscreen()
+  else if (phase === 'closing')
+    void collapseFromFullscreen()
+})
+
+/**
+ * Keeps the rendered fade state and Electron click-through state synchronized.
+ *
+ * Triggering workflow:
+ *
+ * {@link watch}
+ *   -> `fade-on-hover reactive state change`
+ *     -> {@link handleFadeOnHoverInteractionChange}
+ *
+ * Upstream:
+ * - {@link isOutsideFor250Ms} and {@link isAroundWindowBorderFor250Ms}
+ * - {@link isOutsideWindow}, {@link isTransparent}, and {@link isTransparentForMouseEvents}
+ * - {@link controlsOverlayActive}, {@link fadeOnHoverEnabled}, {@link alwaysOnTop}, and {@link stagePaused}
+ *
+ * Downstream:
+ * - {@link resolveFadeOnHoverInteraction}
+ * - {@link setIgnoreMouseEvents}
+ */
+function handleFadeOnHoverInteractionChange() {
+  // Settings cover the work area, so the whole window takes the pointer and the stage never fades.
+  if (stagePaused.value || fullscreenActive.value) {
     isIgnoringMouseEvents.value = false
     shouldFadeOnCursorWithin.value = false
     setIgnoreMouseEvents([false, { forward: true }])
-    pause()
     return
   }
 
-  if (hearingDialogOpen.value) {
-    // Hearing dialog/drawer is open; keep window interactive
+  if (controlsOverlayActive.value || !outsideHearingStatus.value || !outsideAuthStatus.value) {
+    // Portaled controls must receive clicks even outside the Island's bounds.
     isIgnoringMouseEvents.value = false
     shouldFadeOnCursorWithin.value = false
     setIgnoreMouseEvents([false, { forward: true }])
-    pause()
     return
   }
 
-  const insideControls = !isOutsideFor250Ms.value || !isOutsideStatusIslandFor250Ms.value
-  const nearBorder = isAroundWindowBorderFor250Ms.value
+  // Entering counts at once and leaving keeps the region for the debounce window.
+  // Waiting for the debounce on the way in would leave the button click-through for
+  // 250ms, which the pixel hit test reads as blank canvas and passes to the app below.
+  const insideControls = !isOutside.value || !isOutsideFor250Ms.value
+  const nearBorder = isAroundWindowBorder.value || isAroundWindowBorderFor250Ms.value
 
   if (insideControls || nearBorder) {
     // Inside interactive controls or near resize border: do NOT ignore events
     isIgnoringMouseEvents.value = false
     shouldFadeOnCursorWithin.value = false
     setIgnoreMouseEvents([false, { forward: true }])
-    pause()
   }
   else {
-    const fadeEnabled = fadeOnHoverEnabled.value
-    // Otherwise allow click-through while we fade UI based on transparency (when enabled)
-    isIgnoringMouseEvents.value = fadeEnabled
-    shouldFadeOnCursorWithin.value = fadeEnabled && !isOutsideWindow.value && !isTransparent.value
-    setIgnoreMouseEvents([fadeEnabled, { forward: true }])
-    if (fadeEnabled)
-      resume()
-    else
-      pause()
-  }
-})
-
-// Emit runtime snapshot on change and on request from settings panel
-watch(modelSettingsRuntimeSnapshot, (snapshot) => {
-  postModelSettingsRuntimeChannelEvent({ type: 'snapshot', snapshot })
-}, { immediate: true })
-
-watch(modelSettingsRuntimeChannelEvent, (event) => {
-  if (event?.type !== 'request-current')
-    return
-
-  postModelSettingsRuntimeChannelEvent({ type: 'snapshot', snapshot: modelSettingsRuntimeSnapshot.value })
-})
-
-const settingsAudioDeviceStore = useSettingsAudioDevice()
-const { stream, enabled } = storeToRefs(settingsAudioDeviceStore)
-const { askPermission } = settingsAudioDeviceStore
-const { startRecord, stopRecord, onStopRecord } = useAudioRecorder(stream)
-const hearingPipeline = useHearingSpeechInputPipeline()
-const { transcribeForRecording, transcribeForMediaStream, stopStreamingTranscription } = hearingPipeline
-const { supportsStreamInput } = storeToRefs(hearingPipeline)
-const chatSyncStore = useChatSyncStore()
-const shouldUseStreamInput = computed(() => supportsStreamInput.value && !!stream.value)
-
-const { init: initVAD, dispose: disposeVAD, start: startVAD, loaded: vadLoaded } = useVAD(workletUrl, {
-  threshold: ref(0.6),
-  onSpeechStart: () => {
-    void handleSpeechStart()
-  },
-  onSpeechEnd: () => {
-    void handleSpeechEnd()
-  },
-})
-
-let stopOnStopRecord: (() => void) | undefined
-const audioInteractionStarting = ref(false)
-
-// Caption overlay broadcast channel
-type CaptionChannelEvent
-  = | { type: 'caption-speaker', text: string }
-    | { type: 'caption-assistant', text: string }
-const { post: postCaption } = useBroadcastChannel<CaptionChannelEvent, CaptionChannelEvent>({ name: 'airi-caption-overlay' })
-
-function handleStreamingSentenceEnd(delta: string) {
-  console.info('[Main Page] Received transcription delta:', delta)
-  const finalText = delta
-  if (!finalText || !finalText.trim()) {
-    return
-  }
-
-  postCaption({ type: 'caption-speaker', text: finalText })
-
-  void (async () => {
-    try {
-      console.info('[Main Page] Sending transcription to chat:', finalText)
-      await chatSyncStore.requestIngest({ text: finalText })
-    }
-    catch (err) {
-      console.error('[Main Page] Failed to send chat from voice:', err)
-    }
-  })()
-}
-
-function handleStreamingSpeechEnd(text: string) {
-  console.info('[Main Page] Speech ended, final text:', text)
-  postCaption({ type: 'caption-speaker', text })
-}
-
-async function handleSpeechStart() {
-  if (shouldUseStreamInput.value) {
-    console.info('Speech detected - transcription session should already be active')
-    return
-  }
-
-  startRecord()
-}
-
-async function handleSpeechEnd() {
-  if (shouldUseStreamInput.value) {
-    // Keep streaming session alive; idle timer in pipeline will handle teardown.
-    return
-  }
-
-  stopRecord()
-}
-
-async function startAudioInteraction() {
-  if (audioInteractionStarting.value)
-    return
-
-  // NOTICE: `stopOnStopRecord` only tracks whether the non-stream recording hook was registered.
-  //
-  // It does NOT guarantee that the current realtime transcription session is still attached to the
-  // latest `MediaStream`. We previously used it as a generic "already started" guard, which broke
-  // the hearing-config retoggle path: the mic stream was recreated, VAD restarted on the new stream,
-  // but `transcribeForMediaStream()` never reattached so speech was detected without any transcript.
-  //
-  // Keep the startup guard scoped to "startup in progress" only, and let stream changes restart the
-  // transcription binding when a new stream arrives.
-  audioInteractionStarting.value = true
-  try {
-    console.info('[Main Page] Starting audio interaction...')
-
-    initVAD().then(() => {
-      if (stream.value) {
-        console.info('[Main Page] VAD initialized successfully, starting with stream input')
-        return startVAD(stream.value)
-      }
-    }).catch((err) => {
-      console.warn('[Main Page] VAD initialization failed (non-critical for Web Speech API):', err)
+    const interaction = resolveFadeOnHoverInteraction({
+      alwaysOnTop: alwaysOnTop.value,
+      cursorInsideWindow: !isOutsideWindow.value,
+      // NOTICE:
+      // On native Wayland the polled cursor position can stick stale (#2521),
+      // and Electron's setIgnoreMouseEvents `forward` flag is unsupported on
+      // Linux. A click-through window there never gets pointer events back,
+      // so the controls menu can never open. Keep the window interactive.
+      // Removal: reliable Wayland cursor reporting or Linux `forward` support.
+      clickThroughAvailable: !isWayland.value,
+      enabled: fadeOnHoverEnabled.value,
+      transparentForFade: isTransparent.value,
+      transparentForPointer: isTransparentForMouseEvents.value,
     })
 
-    if (shouldUseStreamInput.value) {
-      console.info('[Main Page] Starting streaming transcription...', {
-        supportsStreamInput: supportsStreamInput.value,
-        hasStream: !!stream.value,
-      })
-
-      if (!stream.value) {
-        console.warn('[Main Page] Stream not available despite shouldUseStreamInput being true')
-        return
-      }
-
-      // Use sentence deltas for live captions and speech end for final text.
-      await transcribeForMediaStream(stream.value, {
-        onSentenceEnd: handleStreamingSentenceEnd,
-        onSpeechEnd: handleStreamingSpeechEnd,
-      })
-
-      console.info('[Main Page] Streaming transcription started successfully')
-    }
-    else {
-      console.warn('[Main Page] Not starting streaming transcription:', {
-        shouldUseStreamInput: shouldUseStreamInput.value,
-        hasStream: !!stream.value,
-        supportsStreamInput: supportsStreamInput.value,
-      })
-    }
-
-    // NOTICE: This hook is only for record-then-transcribe providers.
-    //
-    // Streaming providers use the active `MediaStream` directly, so this callback must not be treated
-    // as proof that a realtime session is alive. Future refactors should keep recorder-hook bookkeeping
-    // separate from stream transcription state, otherwise mic/device re-toggles can leave VAD active
-    // but transcription detached.
-    //
-    // Hook once for non-streaming providers.
-    if (!stopOnStopRecord) {
-      stopOnStopRecord = onStopRecord(async (recording) => {
-        if (shouldUseStreamInput.value)
-          return
-
-        const text = await transcribeForRecording(recording)
-        if (!text || !text.trim())
-          return
-
-        // Update caption overlay speaker text via BroadcastChannel
-        postCaption({ type: 'caption-speaker', text })
-
-        try {
-          await chatSyncStore.requestIngest({ text })
-        }
-        catch (err) {
-          console.error('Failed to send chat from voice:', err)
-        }
-      })
-    }
-  }
-  catch (e) {
-    console.error('Audio interaction init failed:', e)
-  }
-  finally {
-    audioInteractionStarting.value = false
+    isIgnoringMouseEvents.value = interaction.ignoreMouseEvents
+    shouldFadeOnCursorWithin.value = interaction.fadeStage
+    setIgnoreMouseEvents([interaction.ignoreMouseEvents, { forward: true }])
   }
 }
 
-function stopAudioInteraction() {
-  tryCatch(() => {
-    stopOnStopRecord?.()
-    stopOnStopRecord = undefined
-    audioInteractionStarting.value = false
-    void stopStreamingTranscription(true)
-    disposeVAD()
-  })
-}
+watch(
+  [outsideHearingStatus, outsideAuthStatus, isOutside, isOutsideFor250Ms, isPointerOverStageCanvas, isAroundWindowBorder, isAroundWindowBorderFor250Ms, isOutsideWindow, isTransparent, isTransparentForMouseEvents, controlsOverlayActive, fadeOnHoverEnabled, alwaysOnTop, stagePaused, isWayland, fullscreenActive],
+  handleFadeOnHoverInteractionChange,
+  { immediate: true },
+)
 
-watch(enabled, async (val) => {
-  console.info('[Main Page] Audio enabled changed:', val, 'stream available:', !!stream.value)
-  if (val) {
-    await askPermission()
-    await startAudioInteraction()
-  }
-  else {
-    stopAudioInteraction()
-  }
-}, { immediate: true })
+useModelSettingsRuntimeOwner({
+  ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
+  renderer: () => stageModelRenderer.value,
+  runtimeSnapshot: modelSettingsRuntimeSnapshot,
+})
 
+const voice = useVoiceStore()
+const toolSelection = useToolSelectionStore()
+// Spoken turns start in this window. They use the tools that the chat window composer grants.
+onScopeDispose(voice.connectTools(() => toolSelection.requestTools))
+const openInlay = useElectronEventaInvoke(electronOpenInlay)
+useVoiceListening()
+usePushToTalkShortcut()
+// The inlay stays shown from startup and draws a capsule when any capture starts.
+// This call shows it again after the user hid it. A failed begin never reaches `capturing`.
+watch(
+  () => voice.state?.phase === 'capturing',
+  (capturing) => {
+    if (capturing)
+      void openInlay()
+  },
+)
+watch(() => voice.error, (error) => {
+  if (error)
+    toast.error(error)
+})
+// A draft that the host is sending needs no inlay. A failed send clears `sending`, so the draft opens the inlay again.
+watch(
+  () => voice.drafts.filter(draft => !draft.sending).map(draft => `${draft.id}:${draft.rawText}`).join('\0'),
+  (speechDrafts) => {
+    if (speechDrafts)
+      void openInlay()
+  },
+)
 onMounted(() => {
-  if (onboardingStore.needsOnboarding) {
+  if (onboardingStore.needsOnboarding)
     openOnboarding()
-  }
 })
-
-onUnmounted(() => {
-  postModelSettingsRuntimeChannelEvent({
-    type: 'owner-gone',
-    ownerInstanceId: modelSettingsRuntimeOwnerInstanceId,
-  })
-  stopAudioInteraction()
-})
-
-watch(stream, async (currentStream) => {
-  if (!enabled.value || !currentStream || audioInteractionStarting.value)
-    return
-
-  // NOTICE: The controls-island mic toggle and device changes can replace the underlying MediaStream
-  // without reloading the page. When that happens, VAD may successfully restart against the new stream,
-  // but any existing transcription transport is still bound to the old one. Always allow the page to
-  // re-run `startAudioInteraction()` for a newly available stream unless startup is already underway.
-  console.info('[Main Page] Stream became available, ensuring audio interaction is started')
-  await startAudioInteraction()
-})
-
-watch([stream, () => vadLoaded.value], async ([s, loaded]) => {
-  if (enabled.value && loaded && s) {
-    try {
-      await startVAD(s)
-    }
-    catch (e) {
-      console.error('Failed to start VAD with stream:', e)
-    }
-  }
-})
-
-// Assistant caption is broadcast from Stage.vue via the same channel
 
 const cursorPosition = computed(() => ({
   x: relativeMouseX.value,
@@ -469,6 +688,12 @@ const cursorPosition = computed(() => ({
     relative z-2 h-full overflow-hidden rounded-xl
     transition="opacity duration-500 ease-in-out"
   >
+    <div v-show="!settingsStore.streamerMode && !fullscreenActive" ref="hearingStatusElement" :class="['absolute bottom-3 left-1/2 z-30 w-fit -translate-x-1/2']">
+      <HearingStatus align="center" />
+    </div>
+    <div v-show="!settingsStore.streamerMode && !fullscreenActive" ref="authStatusElement" :class="['absolute left-1/2 top-3 z-40 w-fit -translate-x-1/2']">
+      <AuthStatusIsland />
+    </div>
     <!-- Stage is always in DOM so TresCanvas can measure dimensions -->
     <div
       :class="[
@@ -477,6 +702,8 @@ const cursorPosition = computed(() => ({
       ]"
     >
       <div
+        ref="stageFrameElement"
+        :style="stageFrameStyle"
         :class="[
           shouldFadeOnCursorWithin ? 'op-0' : 'op-100',
           'absolute',
@@ -486,8 +713,18 @@ const cursorPosition = computed(() => ({
           'transition-opacity duration-250 ease-in-out',
         ]"
       >
-        <StatusIsland v-if="IS_DEV" ref="statusIslandRef" />
-        <ResourceStatusIsland />
+        <!--
+          Every element that paints over the stage carries the opaque marker,
+          so that the screen sampler does not read AIRI's own colors as desktop
+          light. ResourceStatusIsland marks its pill itself, because its root
+          spans the whole stage width. Tooltips and dialogs need none: reka-ui
+          portals them to the body and the mask finds them there. HoloCoupon
+          never renders (v-if="false").
+        -->
+        <!-- These islands have no single root element for v-show, so a wrapper hides them while settings show. -->
+        <div v-show="!fullscreenActive">
+          <ResourceStatusIsland />
+        </div>
         <WidgetStage
           ref="widgetStageRef"
           v-model:state="componentStateStage"
@@ -495,11 +732,21 @@ const cursorPosition = computed(() => ({
           flex-1
           :cursor-position="cursorPosition"
           :paused="stagePaused"
+          @error="handleStageRenderError"
+          @reset="handleStageReset"
+          @select-avatar-model="openSettings({ route: '/settings/models' })"
         />
         <HoloCoupon />
-        <ControlsIsland
-          ref="controlsIslandRef"
-        />
+        <div v-show="!fullscreenActive">
+          <ControlsIslandRoot :frozen="controlsIslandInteractionActive">
+            <ControlsIsland
+              ref="controlsIslandRef"
+              :cursor-away="cursorAwayFromWindow"
+              :[stageOpaqueAttribute]="true"
+              @interaction-change="controlsIslandInteractionActive = $event"
+            />
+          </ControlsIslandRoot>
+        </div>
       </div>
     </div>
     <!-- Loading overlay sits on top, does not hide the stage -->
@@ -544,7 +791,14 @@ const cursorPosition = computed(() => ({
         bg="white/80 dark:neutral-950/80" backdrop-blur="md"
       >
         <div class="wall absolute top-0 h-8" />
-        <div class="absolute left-0 top-0 h-full w-full flex animate-flash animate-duration-5s animate-count-infinite select-none items-center justify-center text-1.5rem text-primary-400 font-normal drag-region">
+        <div
+          :class="[
+            'absolute left-0 top-0 h-full w-full',
+            'flex items-center justify-center',
+            'animate-flash animate-duration-5s animate-count-infinite',
+            'select-none text-1.5rem text-primary-400 font-normal drag-region',
+          ]"
+        >
           DRAG HERE TO MOVE
         </div>
         <div class="wall absolute bottom-0 h-8 drag-region" />
@@ -559,7 +813,7 @@ const cursorPosition = computed(() => ({
     leave-from-class="opacity-100"
     leave-to-class="opacity-50"
   >
-    <div v-if="isAroundWindowBorderFor250Ms && !isLoading" class="pointer-events-none absolute left-0 top-0 z-999 h-full w-full">
+    <div v-if="(isAroundWindowBorder || isAroundWindowBorderFor250Ms) && !isLoading && !fullscreenActive" class="pointer-events-none absolute left-0 top-0 z-999 h-full w-full">
       <div
         :class="[
           'b-primary/50',
@@ -568,6 +822,26 @@ const cursorPosition = computed(() => ({
       />
     </div>
   </Transition>
+  <!--
+    The fullscreen mode of the main window. Nothing of it mounts until it opens. Two layers share the size of the area:
+    the backdrop under the stage, and the island and the surface over it. Their content keeps its final layout from
+    the bottom left, so it shows from left to right as the area grows.
+  -->
+  <div
+    v-if="fullscreenAreaStyle"
+    ref="fullscreenAreaElement"
+    :style="fullscreenAreaStyle"
+    :class="['fixed left-0 top-0 z-1 overflow-hidden']"
+  >
+    <FullscreenBackdrop />
+  </div>
+  <div
+    v-if="fullscreenAreaStyle"
+    :style="fullscreenAreaStyle"
+    :class="['pointer-events-none fixed left-0 top-0 z-3 overflow-hidden']"
+  >
+    <FullscreenOverlay />
+  </div>
 </template>
 
 <style scoped>

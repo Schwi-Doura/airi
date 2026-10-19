@@ -2,9 +2,13 @@ import type { createContext } from '@moeru/eventa/adapters/electron/main'
 import type { ShortcutBinding, ShortcutRegistrationResult } from '@proj-airi/stage-shared/global-shortcut'
 import type { BrowserWindow } from 'electron'
 
+import type { UiohookDriver } from './global-shortcut-uiohook'
+
+import process from 'node:process'
+
 import { useLogg } from '@guiiai/logg'
 import { defineInvokeHandler } from '@moeru/eventa'
-import { formatElectronAccelerator, ShortcutFailureReasons } from '@proj-airi/stage-shared/global-shortcut'
+import { formatElectronAccelerator, isSameKeyCombination, ShortcutFailureReasons } from '@proj-airi/stage-shared/global-shortcut'
 import { globalShortcut } from 'electron'
 
 import {
@@ -15,7 +19,6 @@ import {
   electronShortcutUnregisterAll,
 } from '../../../shared/eventa'
 import { onAppBeforeQuit } from '../../libs/bootkit/lifecycle'
-import { createUiohookDriver } from './global-shortcut-uiohook'
 
 export type EventaContext = ReturnType<typeof createContext>['context']
 
@@ -57,10 +60,23 @@ export function setupGlobalShortcutService(): GlobalShortcutService {
     }
   }
 
-  const uiohookDriver = createUiohookDriver({
-    broadcastTriggered,
-    logger: log,
-  })
+  let uiohookDriver: UiohookDriver | undefined
+
+  /**
+   * Tells if another binding already uses the key combination of `binding`.
+   *
+   * Electron `globalShortcut` rejects a second registration of one accelerator, but the uiohook driver does not
+   * register with the OS and does not consume key events. So a uiohook binding and an Electron binding with one
+   * combination would both fire on one press. This check covers both drivers. A binding with the same ID is the
+   * binding that a caller rebinds, so it is not a conflict.
+   */
+  function usedByAnotherBinding(binding: ShortcutBinding): boolean {
+    for (const [id, entry] of active) {
+      if (id !== binding.id && isSameKeyCombination(entry.binding.accelerator, binding.accelerator, { isMacOS: process.platform === 'darwin' }))
+        return true
+    }
+    return false
+  }
 
   function tryRegisterElectron(binding: ShortcutBinding): ShortcutRegistrationResult {
     const electronAccelerator = formatElectronAccelerator(binding.accelerator)
@@ -79,7 +95,23 @@ export function setupGlobalShortcutService(): GlobalShortcutService {
     return { id: binding.id, ok: true }
   }
 
-  function tryRegisterUiohook(binding: ShortcutBinding): ShortcutRegistrationResult {
+  async function tryRegisterUiohook(binding: ShortcutBinding): Promise<ShortcutRegistrationResult> {
+    if (!uiohookDriver) {
+      // NOTICE:
+      // uiohook-napi@1.5.5 ships an x86-64 binary in its Linux ARM64 prebuild.
+      // Loading the existing driver only when needed keeps AIRI startup working.
+      // Source: https://app.unpkg.com/uiohook-napi@1.5.5/files/prebuilds/linux-arm64
+      // Remove this workaround when that prebuild contains an ARM64 binary.
+      try {
+        const { createUiohookDriver } = await import('./global-shortcut-uiohook')
+        uiohookDriver = createUiohookDriver({ broadcastTriggered, logger: log })
+      }
+      catch (error) {
+        log.withError(error).warn('uiohook driver is unavailable on this system')
+        return { id: binding.id, ok: false, reason: ShortcutFailureReasons.Unsupported }
+      }
+    }
+
     const result = uiohookDriver.tryRegister(binding)
     if (result.ok)
       active.set(binding.id, { binding, owner: 'renderer', driver: 'uiohook' })
@@ -91,6 +123,8 @@ export function setupGlobalShortcutService(): GlobalShortcutService {
     const existing = active.get(binding.id)
     if (existing && existing.owner !== 'main')
       return { id: binding.id, ok: false, reason: ShortcutFailureReasons.DuplicateId }
+    if (usedByAnotherBinding(binding))
+      return { id: binding.id, ok: false, reason: ShortcutFailureReasons.Conflict }
 
     const electronAccelerator = formatElectronAccelerator(binding.accelerator)
     const nextEntry: ActiveBinding = { binding, owner: 'main', driver: 'electron', electronAccelerator, onTriggered }
@@ -127,15 +161,17 @@ export function setupGlobalShortcutService(): GlobalShortcutService {
       }
     }
     else {
-      uiohookDriver.unregisterById(id)
+      uiohookDriver?.unregisterById(id)
     }
     active.delete(id)
   }
 
-  function tryRegister(binding: ShortcutBinding): ShortcutRegistrationResult {
+  function tryRegister(binding: ShortcutBinding): ShortcutRegistrationResult | Promise<ShortcutRegistrationResult> {
     if (active.has(binding.id)) {
       return { id: binding.id, ok: false, reason: ShortcutFailureReasons.DuplicateId }
     }
+    if (usedByAnotherBinding(binding))
+      return { id: binding.id, ok: false, reason: ShortcutFailureReasons.Conflict }
 
     return binding.receiveKeyUps
       ? tryRegisterUiohook(binding)
@@ -189,7 +225,7 @@ export function setupGlobalShortcutService(): GlobalShortcutService {
 
   const dispose: GlobalShortcutService['dispose'] = () => {
     unregisterAll(true)
-    uiohookDriver.dispose()
+    uiohookDriver?.dispose()
     contexts.clear()
   }
 

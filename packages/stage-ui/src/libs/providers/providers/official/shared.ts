@@ -4,6 +4,7 @@ import { getActivePinia } from 'pinia'
 import { getAuthToken } from '../../../../libs/auth'
 import { SERVER_URL } from '../../../../libs/server'
 import { useChatSessionStore } from '../../../../stores/chat/session-store'
+import { AIRI_CHAT_SESSION_ID_HEADER } from '../../../product-signals/headers'
 
 export const OFFICIAL_ICON = 'i-solar:star-bold-duotone'
 
@@ -14,9 +15,10 @@ export function withCredentials() {
     if (token) {
       headers.set('Authorization', `Bearer ${token}`)
     }
-    const chatSession = getActivePinia() ? useChatSessionStore() : null
+    // A chat request names its own session. A background turn must not take the session that is open in the UI.
+    const chatSession = !headers.has(AIRI_CHAT_SESSION_ID_HEADER) && getActivePinia() ? useChatSessionStore() : null
     if (chatSession?.activeSessionId)
-      headers.set('x-airi-session-id', chatSession.activeSessionId)
+      headers.set(AIRI_CHAT_SESSION_ID_HEADER, chatSession.activeSessionId)
 
     const requestInit = {
       ...init,

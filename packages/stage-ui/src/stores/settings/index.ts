@@ -1,3 +1,4 @@
+import { useTachie } from '@proj-airi/stage-ui-tachie'
 import { defineStore, storeToRefs } from 'pinia'
 
 import { useSettingsAnalytics } from './analytics'
@@ -34,6 +35,7 @@ export const useSettings = defineStore('settings', () => {
   const stageModel = useSettingsStageModel()
   const spine = useSettingsSpine()
   const theme = useSettingsTheme()
+  const tachie = useTachie()
   const controlsIsland = useSettingsControlsIsland()
   const developer = useSettingsDeveloper()
 
@@ -42,6 +44,7 @@ export const useSettings = defineStore('settings', () => {
     analytics.resetState()
     general.resetState()
     spine.resetState()
+    tachie.resetState()
     theme.resetState()
     controlsIsland.resetState()
     developer.resetState()
@@ -61,6 +64,7 @@ export const useSettings = defineStore('settings', () => {
     disableTransitions: generalRefs.disableTransitions,
     usePageSpecificTransitions: generalRefs.usePageSpecificTransitions,
     language: generalRefs.language,
+    streamerMode: generalRefs.streamerMode,
     analyticsEnabled: analyticsRefs.analyticsEnabled,
     websocketSecureEnabled: generalRefs.websocketSecureEnabled,
 

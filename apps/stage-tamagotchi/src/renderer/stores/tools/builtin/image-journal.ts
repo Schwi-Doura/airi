@@ -133,7 +133,7 @@ async function executeCreateImageJournalEntry(params: { prompt?: string, title?:
           if (!extension.airi.modules)
             extension.airi.modules = {}
           extension.airi.modules.activeBackgroundId = entryId
-          cardStore.updateCard(cardId, { ...card, extensions: extension })
+          await cardStore.updateCard(cardId, { ...card, extensions: extension })
         }
       }
     }
@@ -159,11 +159,10 @@ async function executeCreateImageJournalEntry(params: { prompt?: string, title?:
       }
     }
 
-    // Return structured result for UI rendering
+    // The gallery owns image bytes. Tool results carry only metadata for the model and UI.
     return JSON.stringify({
       message: `Image created in ${mode} mode${mode === 'bg' || mode === 'bg_widget' ? ' and set as background' : ''}.`,
       entryId,
-      imageUrl: artistryResult.imageUrl || artistryResult.base64,
       title,
       prompt: params.prompt,
       mode,
@@ -204,7 +203,7 @@ async function executeSetAsBackground(params: { query?: string }) {
           if (!extension.airi.modules)
             extension.airi.modules = {}
           extension.airi.modules.activeBackgroundId = entry.id
-          cardStore.updateCard(cardId, { ...card, extensions: extension })
+          await cardStore.updateCard(cardId, { ...card, extensions: extension })
         }
       }
       return `Background set to "${entry.title}".`

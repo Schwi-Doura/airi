@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createServerSignInContext, requestSocialSignInRedirect } from './sign-in'
+import {
+  createServerSignInContext,
+  requestSocialSignInRedirect,
+  SocialSignInTimeoutError,
+} from './sign-in'
 
 describe('ui-server-auth sign-in flow helpers', () => {
   it('rebuilds the OIDC callback URL without provider and prompt query params', () => {
     expect(createServerSignInContext(
-      'https://auth.airi.test/sign-in?api_server_url=https%3A%2F%2Fairi-server-dev.up.railway.app&client_id=airi-stage-web&provider=github&prompt=login&response_type=code&scope=openid',
+      'https://auth.airi.test/sign-in?api_server_url=https%3A%2F%2Fapi-dev.airi.build&client_id=airi-stage-web&provider=github&prompt=login&response_type=code&scope=openid',
       'https://api.airi.test',
     )).toEqual({
       callbackURL: 'https://api.airi.test/api/auth/oauth2/authorize?client_id=airi-stage-web&response_type=code&scope=openid',
@@ -78,10 +82,10 @@ describe('ui-server-auth sign-in flow helpers', () => {
 
   it('keeps trusted standalone admin redirects on the admin origin', () => {
     expect(createServerSignInContext(
-      'https://accounts.airi.build/ui/sign-in?redirect=https%3A%2F%2Fadmin.airi.build%2Fllm-router%3Fapi_server_url%3Dhttps%253A%252F%252Fairi-server-dev.up.railway.app',
+      'https://accounts.airi.build/ui/sign-in?redirect=https%3A%2F%2Fadmin.airi.build%2Fllm-router%3Fapi_server_url%3Dhttps%253A%252F%252Fapi-dev.airi.build',
       'https://api.airi.test',
     )).toEqual({
-      callbackURL: 'https://admin.airi.build/llm-router?api_server_url=https%3A%2F%2Fairi-server-dev.up.railway.app',
+      callbackURL: 'https://admin.airi.build/llm-router?api_server_url=https%3A%2F%2Fapi-dev.airi.build',
       requestedProvider: null,
     })
 
@@ -119,20 +123,35 @@ describe('ui-server-auth sign-in flow helpers', () => {
     })).resolves.toBe('https://accounts.example.test/oauth/google')
 
     expect(fetchImpl).toHaveBeenCalledTimes(1)
-    expect(fetchImpl).toHaveBeenCalledWith(
-      'https://api.airi.test/api/auth/sign-in/social',
-      expect.objectContaining({
-        method: 'POST',
-        credentials: 'include',
-        redirect: 'manual',
-      }),
-    )
-
-    const init = fetchImpl.mock.calls[0]?.[1]
-
-    expect(JSON.parse(String(init?.body))).toEqual({
+    const [url, init] = fetchImpl.mock.calls[0] ?? []
+    expect(String(url)).toBe('https://api.airi.test/api/auth/sign-in/social')
+    expect((init as RequestInit).method).toBe('POST')
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
       provider: 'google',
       callbackURL: 'https://api.airi.test/api/auth/oauth2/authorize?client_id=airi-stage-web',
+      disableRedirect: true,
+    })
+  })
+
+  it('posts only the callback URL (no provider field) to the Steam sign-in endpoint', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      return new Response(JSON.stringify({ url: 'https://steamcommunity.com/openid/login?...', redirect: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+
+    await expect(requestSocialSignInRedirect({
+      apiServerUrl: 'https://api.airi.test',
+      provider: 'steam',
+      callbackURL: 'https://api.airi.test/api/auth/oauth2/authorize?client_id=airi-stage-web',
+      fetchImpl,
+    })).resolves.toBe('https://steamcommunity.com/openid/login?...')
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? []
+    expect(String(url)).toBe('https://api.airi.test/api/auth/sign-in/steam')
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      callbackURL: 'https://api.airi.test/api/auth/oauth2/authorize?client_id=airi-stage-web',
+      disableRedirect: true,
     })
   })
 
@@ -153,5 +172,41 @@ describe('ui-server-auth sign-in flow helpers', () => {
       callbackURL: '/',
       fetchImpl,
     })).rejects.toThrow('Provider is temporarily unavailable')
+  })
+
+  it.each(['google', 'steam'] as const)('aborts a stalled %s request when the provider timeout wins', async (provider) => {
+    vi.useFakeTimers()
+    let requestSignal: AbortSignal | null | undefined
+    let didAbort = false
+    const fetchImpl = vi.fn<typeof fetch>((_, init) => {
+      const signal = init?.signal
+      requestSignal = signal
+
+      return new Promise<Response>((_, reject) => {
+        signal?.addEventListener('abort', () => {
+          didAbort = true
+          reject(signal.reason)
+        }, { once: true })
+      })
+    })
+
+    try {
+      const request = requestSocialSignInRedirect({
+        apiServerUrl: 'https://api.airi.test',
+        provider,
+        callbackURL: '/',
+        fetchImpl,
+        timeoutMs: 50,
+      })
+
+      const rejection = expect(request).rejects.toBeInstanceOf(SocialSignInTimeoutError)
+      await vi.advanceTimersByTimeAsync(50)
+      await rejection
+      expect(requestSignal?.aborted).toBe(true)
+      expect(didAbort).toBe(true)
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })

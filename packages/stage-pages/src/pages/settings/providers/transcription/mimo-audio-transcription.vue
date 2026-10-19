@@ -14,15 +14,17 @@ import {
 } from '@proj-airi/stage-ui/components'
 import { useProviderValidation } from '@proj-airi/stage-ui/composables/use-provider-validation'
 import { useHearingStore } from '@proj-airi/stage-ui/stores/modules/hearing'
-import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
+import { useProviderConfigStore } from '@proj-airi/stage-ui/stores/providers/config'
+import { useProviderStore } from '@proj-airi/stage-ui/stores/providers/provider'
 import { FieldCombobox } from '@proj-airi/ui'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted } from 'vue'
 
 const providerId = 'mimo-audio-transcription'
 const hearingStore = useHearingStore()
-const providersStore = useProvidersStore()
-const { providers } = storeToRefs(providersStore) as { providers: RemovableRef<Record<string, any>> }
+const providersStore = useProviderStore()
+const providerStore = useProviderConfigStore()
+const { configs: providers } = storeToRefs(providerStore) as { configs: RemovableRef<Record<string, any>> }
 
 const apiKey = computed({
   get: () => providers.value[providerId]?.apiKey || '',
@@ -43,7 +45,7 @@ const baseUrl = computed({
 })
 
 const model = computed({
-  get: () => providers.value[providerId]?.model || 'mimo-v2.5-asr',
+  get: () => providers.value[providerId]?.model || 'mimo-v2-omni',
   set: (value) => {
     if (!providers.value[providerId])
       providers.value[providerId] = {}
@@ -117,7 +119,7 @@ const {
       <ProviderAdvancedSettings :title="t('settings.pages.providers.common.section.advanced.title')">
         <ProviderBaseUrlInput
           v-model="baseUrl"
-          :placeholder="providerMetadata?.defaultOptions?.().baseUrl as string || 'https://api.xiaomimimo.com/v1/'"
+          :placeholder="providerMetadata?.defaultConfig.baseUrl as string || 'https://api.xiaomimimo.com/v1/'"
         />
       </ProviderAdvancedSettings>
 

@@ -1,23 +1,35 @@
 <script setup lang="ts">
+import type { ArtistrySyncPayload } from '@proj-airi/stage-shared'
+
 import { defineInvokeHandler } from '@moeru/eventa'
 import { useElectronEventaContext, useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { themeColorFromValue, useThemeColor } from '@proj-airi/stage-layouts/composables/theme-color'
 import { artistrySyncConfig } from '@proj-airi/stage-shared'
 import { ToasterRoot } from '@proj-airi/stage-ui/components'
-import { useInferencePreload } from '@proj-airi/stage-ui/composables'
-import { useSharedAnalyticsStore } from '@proj-airi/stage-ui/stores/analytics'
+import { updateModelAssetStatus, useInferencePreload } from '@proj-airi/stage-ui/composables'
+import { usePiniaSynced } from '@proj-airi/stage-ui/libs/pinia'
+import { initializeAnalytics } from '@proj-airi/stage-ui/libs/product-signals'
+import { isSherpawModelBundled, setSherpawModelAssetHost } from '@proj-airi/stage-ui/libs/providers/providers/sherpaw/model-assets'
+import { useAuthStore } from '@proj-airi/stage-ui/stores/auth'
 import { useCharacterOrchestratorStore } from '@proj-airi/stage-ui/stores/character'
-import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
+import { useChatStore } from '@proj-airi/stage-ui/stores/chat'
 import { usePluginHostInspectorStore } from '@proj-airi/stage-ui/stores/devtools/plugin-host-debug'
 import { useDisplayModelsStore } from '@proj-airi/stage-ui/stores/display-models'
 import { useModsServerChannelStore } from '@proj-airi/stage-ui/stores/mods/api/channel-server'
 import { useContextBridgeStore } from '@proj-airi/stage-ui/stores/mods/api/context-bridge'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useArtistryStore } from '@proj-airi/stage-ui/stores/modules/artistry'
+import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
+import { useHearingStore } from '@proj-airi/stage-ui/stores/modules/hearing'
+import { useSpeechStore } from '@proj-airi/stage-ui/stores/modules/speech'
+import { useVisionStore } from '@proj-airi/stage-ui/stores/modules/vision'
+import { useOnboardingStore } from '@proj-airi/stage-ui/stores/onboarding'
 import { usePerfTracerBridgeStore } from '@proj-airi/stage-ui/stores/perf-tracer-bridge'
 import { listProvidersForPluginHost, shouldPublishPluginHostCapabilities } from '@proj-airi/stage-ui/stores/plugin-host-capabilities'
 import { useSettings, useSettingsAudioDevice } from '@proj-airi/stage-ui/stores/settings'
+import { useSettingsStageModel } from '@proj-airi/stage-ui/stores/settings/stage-model'
 import { useTheme } from '@proj-airi/ui'
+import { isEqual } from 'es-toolkit'
 import { storeToRefs } from 'pinia'
 import { onMounted, onUnmounted, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
@@ -30,79 +42,177 @@ import {
   electronGodotStageGetStatus,
   electronGodotStageStatusChanged,
   electronSettingsNavigate,
-  electronStartTrackMousePosition,
   i18nGetLocale,
   i18nSetLocale,
 } from '../shared/eventa'
+import { electronModelAssetCancel, electronModelAssetEnsure, electronModelAssetRemove, electronModelAssetsClear, electronModelAssetsList, electronModelAssetStatusChanged } from '../shared/eventa/model-assets'
 import {
   electronPluginUpdateCapability,
   pluginProtocolListProviders,
   pluginProtocolListProvidersEventName,
 } from '../shared/eventa/plugin/capabilities'
 import {
+  electronPluginCancelDirectoryImport,
+  electronPluginCommitDirectoryImport,
   electronPluginInspect,
   electronPluginList,
   electronPluginLoad,
   electronPluginLoadEnabled,
+  electronPluginPrepareDirectoryImport,
   electronPluginSetAutoReload,
   electronPluginSetEnabled,
   electronPluginUnload,
 } from '../shared/eventa/plugin/host'
 import { electronPluginToolsChanged } from '../shared/eventa/plugin/tools'
 import { initializeElectronAuthCallbackBridge } from './bridges/electron-auth-callback'
+import { initializeIOTraceRecordingBridge } from './bridges/io-trace-recording'
 import { initializeStageThreeRuntimeTraceBridge } from './bridges/stage-three-runtime-trace'
 import { useLanguage } from './composables/use-language'
-import { createChatSyncWindowLifecycle, resolveInitialChatSyncRoutePath } from './stores/chat-sync-lifecycle'
-import { useTamagotchiMcpToolsStore } from './stores/mcp-tools'
-import { useTamagotchiPluginToolsStore } from './stores/plugin-tools'
+import { useFullscreenStore } from './stores/fullscreen'
 import { useServerChannelSettingsStore } from './stores/settings/server-channel'
 import { useStageWindowLifecycleStore } from './stores/stage-window-lifecycle'
+import {
+  useTamagotchiBuiltinToolsStore,
+  useTamagotchiHomeAssistantStore,
+  useTamagotchiMcpToolsStore,
+  useTamagotchiPluginToolsStore,
+} from './stores/tools'
+import { resolveInitialRendererRoutePath, resolveRendererWindowContext } from './window-context'
 
 const { isDark: dark } = useTheme()
 const settingsStore = useSettings()
 const { language, themeColorsHue, themeColorsHueDynamic } = storeToRefs(settingsStore)
 const router = useRouter()
 const route = useRoute()
-const chatSessionStore = useChatSessionStore()
 const context = useElectronEventaContext()
+const listModelAssets = useElectronEventaInvoke(electronModelAssetsList)
+const ensureModelAsset = useElectronEventaInvoke(electronModelAssetEnsure)
+const cancelModelAsset = useElectronEventaInvoke(electronModelAssetCancel)
+const removeModelAsset = useElectronEventaInvoke(electronModelAssetRemove)
+const clearModelAssets = useElectronEventaInvoke(electronModelAssetsClear)
+const stopModelAssetStatus = context.value.on(electronModelAssetStatusChanged, (event) => {
+  if (event.body && !isSherpawModelBundled(event.body.id))
+    updateModelAssetStatus(event.body)
+})
+setSherpawModelAssetHost({
+  fetch: (model, fileName, signal) => fetch(
+    `airi-model://assets/${encodeURIComponent(model.id)}/${encodeURIComponent(model.revision)}/${fileName}`,
+    { signal },
+  ),
+  list: listModelAssets,
+  ensure: ensureModelAsset,
+  cancel: cancelModelAsset,
+  remove: removeModelAsset,
+  clear: clearModelAssets,
+})
 const getMainLocale = useElectronEventaInvoke(i18nGetLocale)
 const setLocale = useElectronEventaInvoke(i18nSetLocale)
-const initialWindowRoutePath = resolveInitialChatSyncRoutePath(route.path)
-const chatSyncLifecycle = createChatSyncWindowLifecycle(route.path)
-const isSpotlightWindowRoute = initialWindowRoutePath === '/spotlight'
-const isSettingsWindowRoute = initialWindowRoutePath.startsWith('/settings')
+const windowContext = resolveRendererWindowContext()
+const initialRoutePath = resolveInitialRendererRoutePath(route.path)
+const chatStore = useChatStore()
+const builtinToolsStore = useTamagotchiBuiltinToolsStore()
+const homeAssistantStore = useTamagotchiHomeAssistantStore()
+const mcpToolsStore = useTamagotchiMcpToolsStore()
+const pluginToolsStore = useTamagotchiPluginToolsStore()
+const syncedPinia = usePiniaSynced()
+const isSpotlightWindow = initialRoutePath === '/spotlight'
+// The floating chat resizes from its own grip, which keeps the corner beside the character in place.
+const isFloatingChatWindow = initialRoutePath === '/chat-floating'
+// The fullscreen mode places the main window itself, so its edges offer no resize.
+const { active: mainWindowFullscreen } = storeToRefs(useFullscreenStore())
+// A window that hosts the fullscreen mode can load on a settings route, after a reload for example. So the windows
+// are told apart by the host that the main process names, not by the first route alone.
+const isMainWindow = windowContext.fullscreenHost === 'main-window'
+const isSettingsWindow = !windowContext.fullscreenHost && (initialRoutePath === '/settings' || initialRoutePath.startsWith('/settings/'))
+const stopIOTraceRecordingBridge = isMainWindow
+  ? initializeIOTraceRecordingBridge(context.value)
+  : undefined
+
+async function refreshPluginRuntimeTools() {
+  try {
+    await pluginToolsStore.refresh()
+  }
+  catch (error) {
+    console.warn('[App] Failed to refresh plugin runtime tools:', error)
+  }
+}
+
+// Every renderer creates the runtime tool stores for synchronized state. Only
+// the main Stage renderer discovers tools and keeps executors.
+const stopLeadershipListener = syncedPinia.onLeadershipChange((isLeader) => {
+  if (!isLeader)
+    return
+
+  void builtinToolsStore.refresh().catch((error) => {
+    console.warn('[App] Failed to refresh built-in runtime tools:', error)
+  })
+  void mcpToolsStore.refresh().catch((error) => {
+    console.warn('[App] Failed to refresh MCP runtime tools:', error)
+  })
+  void homeAssistantStore.refresh().catch((error) => {
+    console.warn('[App] Failed to refresh Home Assistant tools:', error)
+  })
+  void refreshPluginRuntimeTools()
+})
 
 function createFullStageRuntime() {
+  const authStore = useAuthStore()
+  const onboardingStore = useOnboardingStore()
   const contextBridgeStore = useContextBridgeStore()
   const displayModelsStore = useDisplayModelsStore()
   const serverChannelSettingsStore = useServerChannelSettingsStore()
   const cardStore = useAiriCardStore()
   const serverChannelStore = useModsServerChannelStore()
   const characterOrchestratorStore = useCharacterOrchestratorStore()
-  const analyticsStore = useSharedAnalyticsStore()
   const inferencePreload = useInferencePreload()
   const pluginHostInspectorStore = usePluginHostInspectorStore()
-  const mcpToolsStore = useTamagotchiMcpToolsStore()
-  const pluginToolsStore = useTamagotchiPluginToolsStore()
   const stageWindowLifecycleStore = useStageWindowLifecycleStore()
   const settingsAudioDeviceStore = useSettingsAudioDevice()
   const artistryStore = useArtistryStore()
+  useConsciousnessStore()
+  useHearingStore()
+  useSpeechStore()
+  useSettingsStageModel()
+  useVisionStore()
+
+  let stopAuthenticatedSetup: (() => void) | undefined
+  let stopLoggedOutSetup: (() => void) | undefined
+
+  async function removeAuthenticationProviderConfiguration() {
+    if (!syncedPinia.isLeader())
+      return
+
+    await cardStore.configureForAuthentication(false)
+  }
+
+  function registerAuthenticatedSetup() {
+    stopAuthenticatedSetup ??= authStore.onAuthenticated(async () => {
+      if (!syncedPinia.isLeader())
+        return
+
+      await cardStore.configureForAuthentication(true)
+      await onboardingStore.closeAfterAuthentication()
+    })
+    stopLoggedOutSetup ??= authStore.onLogout(removeAuthenticationProviderConfiguration)
+  }
+
   const { activeProvider, artistryGlobals, activeModel, defaultPromptPrefix, providerOptions } = storeToRefs(artistryStore)
   const getServerChannelConfig = useElectronEventaInvoke(electronGetServerChannelConfig)
   const listPlugins = useElectronEventaInvoke(electronPluginList)
+  const preparePluginDirectoryImport = useElectronEventaInvoke(electronPluginPrepareDirectoryImport)
+  const commitPluginDirectoryImport = useElectronEventaInvoke(electronPluginCommitDirectoryImport)
+  const cancelPluginDirectoryImport = useElectronEventaInvoke(electronPluginCancelDirectoryImport)
   const setPluginEnabled = useElectronEventaInvoke(electronPluginSetEnabled)
   const setPluginAutoReload = useElectronEventaInvoke(electronPluginSetAutoReload)
   const loadEnabledPlugins = useElectronEventaInvoke(electronPluginLoadEnabled)
   const loadPlugin = useElectronEventaInvoke(electronPluginLoad)
   const unloadPlugin = useElectronEventaInvoke(electronPluginUnload)
   const inspectPluginHost = useElectronEventaInvoke(electronPluginInspect)
-  const startTrackingCursorPoint = useElectronEventaInvoke(electronStartTrackMousePosition)
   const reportPluginCapability = useElectronEventaInvoke(electronPluginUpdateCapability)
   const getGodotStageStatus = useElectronEventaInvoke(electronGodotStageGetStatus)
   const syncArtistryConfig = useElectronEventaInvoke(artistrySyncConfig)
-  const isAuxiliaryChatRoute = initialWindowRoutePath === '/chat'
-  const isGodotStageRoute = () => route.path === '/' || route.path.startsWith('/settings')
-  const isWidgetsWindowRoute = () => route.path === '/widgets'
+  const usesGodotStage = !!windowContext.fullscreenHost || initialRoutePath.startsWith('/settings')
+  const isWidgetsWindow = initialRoutePath === '/widgets'
 
   function syncGodotStageRenderer(state: { state: 'stopped' | 'starting' | 'running' | 'stopping' | 'error' }) {
     if (state.state === 'running') {
@@ -114,26 +224,21 @@ function createFullStageRuntime() {
       settingsStore.restoreBuiltInStageModelRenderer()
   }
 
-  async function refreshPluginRuntimeTools() {
-    try {
-      await pluginToolsStore.refresh()
-    }
-    catch (error) {
-      console.warn('[App] Failed to refresh plugin runtime tools:', error)
-    }
-  }
-
   usePerfTracerBridgeStore()
   initializeStageThreeRuntimeTraceBridge()
+  // The main process returns the callback only to the renderer that started
+  // sign-in. Each login-capable window listens locally, while the synchronized
+  // auth action still executes once in the main Stage leader.
   initializeElectronAuthCallbackBridge()
   void stageWindowLifecycleStore.initializeWindowLifecycleBridge()
 
-  watch(() => route.path, () => {
-    contextBridgeStore.setSparkNotifyHostRole(isWidgetsWindowRoute() ? 'client' : 'main')
-  }, { immediate: true })
+  contextBridgeStore.setSparkNotifyHostRole(isWidgetsWindow ? 'client' : 'main')
 
   // NOTICE: register plugin host bridge during setup to avoid race with pages using it in immediate watchers.
   pluginHostInspectorStore.setBridge({
+    prepareDirectoryImport: () => preparePluginDirectoryImport(),
+    commitDirectoryImport: payload => commitPluginDirectoryImport(payload),
+    cancelDirectoryImport: payload => cancelPluginDirectoryImport(payload),
     list: () => listPlugins(),
     setEnabled: async (payload) => {
       const result = await setPluginEnabled(payload)
@@ -159,23 +264,25 @@ function createFullStageRuntime() {
     inspect: () => inspectPluginHost(),
   })
 
-  // NOTICE: Runtime tool stores must register during setup so renderer consumers can see them
-  // before `onMounted()` finishes the rest of the startup flow.
-  void mcpToolsStore.refresh().catch((error) => {
-    console.warn('[App] Failed to refresh MCP runtime tools:', error)
-  })
-  void refreshPluginRuntimeTools()
-
+  let lastSyncedArtistryConfig: ArtistrySyncPayload | undefined
   watch([activeProvider, artistryGlobals, activeModel, defaultPromptPrefix, providerOptions], () => {
-    if (activeProvider.value) {
-      void syncArtistryConfig({
-        provider: activeProvider.value as string,
-        globals: JSON.parse(JSON.stringify(artistryGlobals.value)),
-        model: activeModel.value,
-        promptPrefix: defaultPromptPrefix.value,
-        options: providerOptions.value,
-      })
-    }
+    if (!activeProvider.value)
+      return
+
+    const config = JSON.parse(JSON.stringify({
+      provider: activeProvider.value,
+      globals: artistryGlobals.value,
+      model: activeModel.value,
+      promptPrefix: defaultPromptPrefix.value,
+      options: providerOptions.value,
+    })) as ArtistrySyncPayload
+    if (isEqual(config, lastSyncedArtistryConfig))
+      return
+
+    // Pinia synchronization applies cloned snapshots in every renderer. Keep
+    // this IPC bridge edge-triggered so equal snapshots do not repeat IO.
+    lastSyncedArtistryConfig = config
+    void syncArtistryConfig(config)
   }, { deep: true, immediate: true })
 
   context.value.on(electronGodotStageStatusChanged, (event) => {
@@ -192,15 +299,19 @@ function createFullStageRuntime() {
 
   return {
     async initialize() {
-      analyticsStore.initialize()
+      initializeAnalytics()
+      await authStore.initialize()
       await displayModelsStore.initialize()
-      cardStore.initialize()
+      await cardStore.initialize()
+      registerAuthenticatedSetup()
+      if (!authStore.isAuthenticated)
+        await removeAuthenticationProviderConfiguration()
 
       await displayModelsStore.loadDisplayModelsFromIndexedDB()
       await settingsStore.initializeStageModel()
       await settingsAudioDeviceStore.initialize()
 
-      if (isGodotStageRoute()) {
+      if (usesGodotStage) {
         try {
           syncGodotStageRenderer(await getGodotStageStatus())
         }
@@ -218,12 +329,9 @@ function createFullStageRuntime() {
         token: serverChannelConfig.authToken || undefined,
         possibleEvents: ['ui:configure'],
       }).catch(err => console.error('Failed to initialize Mods Server Channel in App.vue:', err))
-      if (!isAuxiliaryChatRoute) {
-        contextBridgeStore.initialize()
-        if (!isWidgetsWindowRoute()) {
-          characterOrchestratorStore.initialize()
-          await startTrackingCursorPoint()
-        }
+      contextBridgeStore.initialize()
+      if (!isWidgetsWindow) {
+        characterOrchestratorStore.initialize(syncedPinia)
       }
 
       defineInvokeHandler(context.value, pluginProtocolListProviders, async () => listProvidersForPluginHost())
@@ -241,15 +349,22 @@ function createFullStageRuntime() {
       inferencePreload.triggerPreload()
     },
     dispose() {
-      if (!isAuxiliaryChatRoute)
-        contextBridgeStore.dispose()
-      mcpToolsStore.dispose()
-      pluginToolsStore.dispose()
+      stopAuthenticatedSetup?.()
+      stopLoggedOutSetup?.()
+      characterOrchestratorStore.dispose()
+      contextBridgeStore.dispose()
     },
   }
 }
 
-const fullStageRuntime = isSpotlightWindowRoute ? null : createFullStageRuntime()
+const fullStageRuntime = windowContext.stageRuntime === 'full'
+  ? createFullStageRuntime()
+  : null
+// A minimal chat window shows the live reply of the turn that the main window runs.
+// The full runtime starts the whole context bridge, which includes this view.
+const chatStreamView = !fullStageRuntime && (initialRoutePath === '/chat' || isFloatingChatWindow)
+  ? useContextBridgeStore()
+  : null
 
 const { restore: restoreLocale } = useLanguage(language, getMainLocale, setLocale)
 
@@ -258,7 +373,7 @@ watch(dark, () => updateThemeColor(), { immediate: true })
 watch(route, () => updateThemeColor(), { immediate: true })
 onMounted(() => updateThemeColor())
 
-if (isSettingsWindowRoute) {
+if (isSettingsWindow) {
   context.value.on(electronSettingsNavigate, (event) => {
     const targetRoute = event?.body?.route
     if (!targetRoute || route.fullPath === targetRoute) {
@@ -272,7 +387,12 @@ if (isSettingsWindowRoute) {
 }
 
 onMounted(async () => {
-  chatSyncLifecycle.initialize()
+  void listModelAssets().then((statuses) => {
+    for (const status of statuses) {
+      if (!isSherpawModelBundled(status.id))
+        updateModelAssetStatus(status)
+    }
+  }).catch(error => console.warn('Failed to read model asset status:', error))
 
   // NOTICE: Issue #1658
   // When Electron restarts, renderer localStorage may not be flushed to disk.
@@ -282,13 +402,10 @@ onMounted(async () => {
   // https://github.com/moeru-ai/airi/issues/1658
   await restoreLocale()
 
-  await chatSessionStore.initialize()
+  await chatStore.initialize(syncedPinia)
 
   await fullStageRuntime?.initialize()
-})
-
-onUnmounted(() => {
-  chatSyncLifecycle.dispose()
+  await chatStreamView?.initializeStreamView()
 })
 
 watch(themeColorsHue, () => {
@@ -300,7 +417,12 @@ watch(themeColorsHueDynamic, () => {
 }, { immediate: true })
 
 onUnmounted(() => {
+  stopIOTraceRecordingBridge?.()
+  stopModelAssetStatus()
+  stopLeadershipListener?.()
+  chatStore.dispose()
   fullStageRuntime?.dispose()
+  void chatStreamView?.dispose()
 })
 </script>
 
@@ -308,7 +430,7 @@ onUnmounted(() => {
   <ToasterRoot @close="id => toast.dismiss(id)">
     <Toaster />
   </ToasterRoot>
-  <ResizeHandler v-if="!isSpotlightWindowRoute" />
+  <ResizeHandler v-if="!isSpotlightWindow && !isFloatingChatWindow && !mainWindowFullscreen" />
   <RouterView />
 </template>
 

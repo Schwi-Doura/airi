@@ -33,6 +33,8 @@ export interface TtsRequest {
   sequence: number
   text: string
   special: string | null
+  /** Chunker boundary that produced this text. Tracing uses it to explain synthesis latency. */
+  reason: TextSegment['reason']
   priority: number
   createdAt: number
 }
@@ -83,6 +85,7 @@ export interface PlaybackInterruptEvent<TAudio> {
 export interface PlaybackRejectEvent<TAudio> {
   item: PlaybackItem<TAudio>
   reason: string
+  rejectedAt?: number
 }
 
 export type IntentBehavior = 'queue' | 'interrupt' | 'replace'

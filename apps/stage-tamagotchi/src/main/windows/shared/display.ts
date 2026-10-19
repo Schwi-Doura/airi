@@ -1,6 +1,10 @@
 import type { BrowserWindow, Rectangle } from 'electron'
 
+import type { DisplayArea } from '../../../shared/utils/electron/display'
+
 import { screen } from 'electron'
+
+import { findDominantDisplayArea } from '../../../shared/utils/electron/display'
 
 export function currentDisplayBounds(window: BrowserWindow) {
   const bounds = window.getBounds()
@@ -9,11 +13,60 @@ export function currentDisplayBounds(window: BrowserWindow) {
   return nearbyDisplay.bounds
 }
 
-export interface ResizableDisplayArea {
-  /** Full display bounds used to decide which physical display owns most of a window. */
-  bounds: Rectangle
-  /** Usable display area used for quadrant anchoring and final window clamping. */
-  workArea: Rectangle
+/**
+ * Computes bounds that center a window inside an Electron display work area.
+ *
+ * Use when:
+ * - Recovering a desktop window that was moved outside the visible work area
+ * - Preserving the current window size while changing only its position
+ *
+ * Expects:
+ * - Both rectangles use Electron logical display coordinates
+ * - The display work area excludes menu bars, docks, and taskbars
+ *
+ * Returns:
+ * - Centered bounds that preserve the window width and height
+ */
+export function computeCenteredWindowBounds(options: {
+  displayWorkArea: Rectangle
+  windowBounds: Rectangle
+}): Rectangle {
+  const centeredOffsetX = Math.floor((options.displayWorkArea.width - options.windowBounds.width) / 2)
+  const centeredOffsetY = Math.floor((options.displayWorkArea.height - options.windowBounds.height) / 2)
+
+  return {
+    x: options.displayWorkArea.x + Math.max(0, centeredOffsetX),
+    y: options.displayWorkArea.y + Math.max(0, centeredOffsetY),
+    width: options.windowBounds.width,
+    height: options.windowBounds.height,
+  }
+}
+
+/**
+ * Centers and reveals an Electron window on the display matching its current bounds.
+ *
+ * Use when:
+ * - A renderer requests recovery of an off-screen AIRI window
+ * - A hidden window must become visible after its position is restored
+ *
+ * Expects:
+ * - The window is alive and supports Electron's bounds APIs
+ *
+ * Returns:
+ * - The centered bounds applied to the window
+ */
+export function centerWindowOnDisplay(window: Pick<BrowserWindow, 'getBounds' | 'isDestroyed' | 'setBounds' | 'show'> | undefined): Rectangle {
+  if (!window || window.isDestroyed())
+    throw new Error('Main AIRI window is not available.')
+
+  const windowBounds = window.getBounds()
+  const displayWorkArea = screen.getDisplayMatching(windowBounds).workArea
+  const centeredBounds = computeCenteredWindowBounds({ displayWorkArea, windowBounds })
+
+  window.setBounds(centeredBounds)
+  window.show()
+
+  return centeredBounds
 }
 
 export interface DominantDisplayResizeOptions {
@@ -22,7 +75,7 @@ export interface DominantDisplayResizeOptions {
   /** Desired size before display work-area clamping. */
   targetSize: Pick<Rectangle, 'width' | 'height'>
   /** Displays from Electron screen APIs. */
-  displays: readonly ResizableDisplayArea[]
+  displays: readonly DisplayArea[]
 }
 
 /**
@@ -80,43 +133,6 @@ export function computeResizedBoundsAnchoredToDominantDisplay(options: DominantD
     width,
     height,
   }
-}
-
-/**
- * Finds the display that owns the largest visible share of `bounds`.
- */
-export function findDominantDisplayArea(bounds: Rectangle, displays: readonly ResizableDisplayArea[]): ResizableDisplayArea | undefined {
-  let dominantDisplay: ResizableDisplayArea | undefined
-  let dominantArea = -1
-
-  for (const display of displays) {
-    // Use full display bounds, not workArea. Menu bars and docks shrink
-    // workArea, but they should not change which physical display owns a
-    // cross-screen window.
-    const area = intersectionArea(bounds, display.bounds)
-    if (area > dominantArea) {
-      dominantDisplay = display
-      dominantArea = area
-    }
-  }
-
-  return dominantDisplay
-}
-
-function intersectionArea(a: Rectangle, b: Rectangle): number {
-  // Each side of the overlap rectangle is the inner edge from the two source
-  // rectangles. If the right edge crosses the left edge, or bottom crosses top,
-  // the rectangles do not overlap.
-  const left = Math.max(a.x, b.x)
-  const top = Math.max(a.y, b.y)
-  const right = Math.min(a.x + a.width, b.x + b.width)
-  const bottom = Math.min(a.y + a.height, b.y + b.height)
-
-  if (right <= left || bottom <= top) {
-    return 0
-  }
-
-  return (right - left) * (bottom - top)
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -204,7 +220,7 @@ export function mapForBreakpoints<
   basedOn: number,
   sizes: { [key in keyof B]?: number } | number,
   options?: { breakpoints: B },
-) {
+): number {
   if (typeof sizes === 'number') {
     return sizes
   }
@@ -228,8 +244,16 @@ export function mapForBreakpoints<
     .sort((a, b) => b.min - a.min) // Sort descending by min width
 
   const fallback = sortedSizes.find(s => s.min <= basedOn)
+  if (fallback?.value != null) {
+    return fallback.value
+  }
 
-  return fallback?.value ?? Object.values(sizes)?.[0] ?? 0
+  // `basedOn` is below every supplied breakpoint (e.g. height < 640 with sm/md/lg
+  // sizes): use the breakpoint with the smallest minimum width. Selecting by min
+  // instead of `Object.values(sizes)[0]` keeps the result stable when the sizes
+  // object keys are reordered (e.g. by lint sorting rules).
+  const smallest = sortedSizes[sortedSizes.length - 1]
+  return smallest?.value ?? 0
 }
 
 /**

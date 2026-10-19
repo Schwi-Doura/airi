@@ -1,117 +1,93 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { providerOpenAICompatible } from '../libs/providers/providers/openai-compatible'
 import { inferenceServiceProvidersService } from './inference-service-providers'
 
-/**
- * @example
- * describe('services inference-service-providers', () => {})
- */
-describe('services inference-service-providers', () => {
-  /**
-   * @example
-   * const provider = inferenceServiceProvidersService.buildLocal('openai-compatible')
-   */
-  it('builds a local provider from a known definition', () => {
-    const provider = inferenceServiceProvidersService.buildLocal(providerOpenAICompatible.id, {})
-
-    expect(provider.id).toBeDefined()
-    expect(provider.definitionId).toBe(providerOpenAICompatible.id)
-    expect(provider.name).toBe('OpenAI Compatible')
-    expect(provider.config).toEqual({})
-    expect(provider.validated).toBe(false)
-    expect(provider.validationBypassed).toBe(false)
-  })
-
-  /**
-   * @example
-   * expect(() => inferenceServiceProvidersService.buildLocal('missing')).toThrow()
-   */
-  it('rejects unknown provider definitions', () => {
-    expect(() => inferenceServiceProvidersService.buildLocal('missing-definition', {})).toThrow('Provider definition with id "missing-definition" not found.')
-  })
-
-  /**
-   * @example
-   * await inferenceServiceProvidersService.fetchRemote(client)
-   */
-  it('fetches remote providers and indexes them by id', async () => {
-    const client = {
-      api: {
-        v1: {
-          providers: {
-            '$get': vi.fn(async () => ({
+function createClient() {
+  return {
+    api: {
+      v1: {
+        providers: {
+          '$get': vi.fn(async () => ({
+            ok: true,
+            status: 200,
+            json: async () => [{
+              id: 'srv-provider-1',
+              instanceId: 'provider-1',
+              definitionId: 'openai-compatible',
+              config: { baseUrl: 'https://example.com/v1/' },
+              updatedAt: '2026-01-02T00:00:00.000Z',
+              deletedAt: null,
+            }],
+          })),
+          ':id': {
+            $put: vi.fn(async () => ({
               ok: true,
-              json: async () => [{
-                id: 'provider-1',
-                definitionId: providerOpenAICompatible.id,
-                name: 'OpenAI Compatible',
-                config: { baseUrl: 'https://example.com/v1/' },
-                validated: true,
-                validationBypassed: false,
-              }],
-            })),
-            '$post': vi.fn(async () => ({
-              ok: true,
-              json: async () => ({
-                id: 'provider-1',
-                definitionId: providerOpenAICompatible.id,
-                name: 'OpenAI Compatible',
-                config: {},
-                validated: false,
-                validationBypassed: false,
+              status: 200,
+              json: async (): Promise<unknown> => ({
+                id: 'srv-provider-1',
+                instanceId: 'provider-1',
+                definitionId: 'openai-compatible',
+                config: { apiKey: 'sk-test' },
+                updatedAt: '2026-01-03T00:00:00.000Z',
+                deletedAt: null,
               }),
             })),
-            ':id': {
-              $delete: vi.fn(async () => ({ ok: true })),
-              $patch: vi.fn(async () => ({
-                ok: true,
-                json: async () => ({
-                  id: 'provider-1',
-                  definitionId: providerOpenAICompatible.id,
-                  name: 'OpenAI Compatible',
-                  config: {},
-                  validated: false,
-                  validationBypassed: false,
-                }),
-              })),
-            },
+            $delete: vi.fn(async () => ({ ok: true, status: 204 })),
           },
         },
       },
-    }
+    },
+  }
+}
 
-    await expect(inferenceServiceProvidersService.fetchRemote(client)).resolves.toEqual({
-      'provider-1': expect.objectContaining({
-        config: { baseUrl: 'https://example.com/v1/' },
-        id: 'provider-1',
-        validated: true,
-      }),
+describe('services inference-service-providers', () => {
+  it('lists remote replica rows including timestamps', async () => {
+    const client = createClient()
+
+    await expect(inferenceServiceProvidersService.listRemote(client)).resolves.toEqual([{
+      id: 'provider-1',
+      definitionId: 'openai-compatible',
+      config: { baseUrl: 'https://example.com/v1/' },
+      updatedAt: '2026-01-02T00:00:00.000Z',
+      deletedAt: null,
+    }])
+  })
+
+  it('upserts a replica row', async () => {
+    const client = createClient()
+
+    await expect(inferenceServiceProvidersService.upsertRemote(client, {
+      id: 'provider-1',
+      definitionId: 'openai-compatible',
+      config: { apiKey: 'sk-test' },
+    })).resolves.toEqual({
+      id: 'provider-1',
+      definitionId: 'openai-compatible',
+      config: { apiKey: 'sk-test' },
+      updatedAt: '2026-01-03T00:00:00.000Z',
+      deletedAt: null,
     })
   })
 
-  /**
-   * @example
-   * await expect(inferenceServiceProvidersService.fetchRemote(client, { abortSignal })).rejects.toThrow()
-   */
-  it('throws before remote work when aborted', async () => {
-    const controller = new AbortController()
-    controller.abort()
-    const client = {
-      api: {
-        v1: {
-          providers: {
-            '$get': vi.fn(),
-            '$post': vi.fn(),
-            ':id': {
-              $delete: vi.fn(),
-              $patch: vi.fn(),
-            },
-          },
-        },
-      },
-    }
+  it('throws when an upsert fails', async () => {
+    const client = createClient()
+    client.api.v1.providers[':id'].$put.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+    })
 
-    await expect(inferenceServiceProvidersService.fetchRemote(client, { abortSignal: controller.signal })).rejects.toThrow()
+    await expect(inferenceServiceProvidersService.upsertRemote(client, {
+      id: 'provider-1',
+      definitionId: 'openai-compatible',
+      config: {},
+    })).rejects.toThrow('Failed to update provider config')
+  })
+
+  it('treats a missing replica as a completed delete', async () => {
+    const client = createClient()
+    client.api.v1.providers[':id'].$delete.mockResolvedValue({ ok: false, status: 404 })
+
+    await expect(inferenceServiceProvidersService.deleteRemote(client, 'provider-1')).resolves.toBeUndefined()
   })
 })

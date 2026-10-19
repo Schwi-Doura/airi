@@ -5,6 +5,7 @@ import type { Config } from '../../libs/electron/persistence'
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 import type { GlobalShortcutService } from '../../services/electron/global-shortcut'
+import type { ChatWindowManager } from '../chat'
 
 import { join, resolve } from 'node:path'
 
@@ -24,7 +25,8 @@ import {
 import { isSafeSpotlightAccelerator } from '../../../shared/spotlight-shortcut'
 import { baseUrl, getElectronMainDirname, load, withHashRoute } from '../../libs/electron/location'
 import { createReusableWindow } from '../../libs/electron/window-manager'
-import { setupBaseWindowElectronInvokes, transparentWindowConfig } from '../shared/window'
+import { excludeWindowFromTaskbar } from '../shared/app-icon'
+import { protectPrivilegedWindowNavigation, setupBaseWindowElectronInvokes, transparentWindowConfig } from '../shared/window'
 
 const SPOTLIGHT_WINDOW_WIDTH = 720
 const SPOTLIGHT_WINDOW_HEIGHT = 100
@@ -53,7 +55,7 @@ function resolveSpotlightBounds() {
 export function setupSpotlightWindowManager(params: {
   serverChannel: ServerChannel
   i18n: I18n
-  chatWindow: () => Promise<BrowserWindow>
+  chatWindow: ChatWindowManager
   globalShortcut: GlobalShortcutService
   appConfig: Config<typeof globalAppConfigSchema>
 }): SpotlightWindowManager {
@@ -68,12 +70,7 @@ export function setupSpotlightWindowManager(params: {
 
   async function openChatWindowFromNotification() {
     try {
-      const window = await params.chatWindow()
-      if (window.isMinimized())
-        window.restore()
-      window.show()
-      window.focus()
-      window.moveTop()
+      await params.chatWindow.open()
     }
     catch (error) {
       log.withError(error).warn('Failed to open Chat window from Spotlight notification')
@@ -118,6 +115,9 @@ export function setupSpotlightWindowManager(params: {
       },
     })
 
+    excludeWindowFromTaskbar(window)
+    protectPrivilegedWindowNavigation(window)
+
     window.on('blur', () => window.hide())
 
     const { context } = createContext(ipcMain, window)
@@ -138,7 +138,12 @@ export function setupSpotlightWindowManager(params: {
       showNotification(payload.body, () => void openChatWindowFromNotification())
     })
 
-    await load(window, withHashRoute(rendererBase, '/spotlight'))
+    await load(window, withHashRoute(rendererBase, '/spotlight', {
+      query: {
+        'stage-runtime': 'minimal',
+        'synced-leader': 'false',
+      },
+    }))
 
     return window
   })

@@ -5,6 +5,7 @@ import { computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 
+import { trackEmailVerificationCompleted, trackEmailVerificationFailed } from '../modules/analytics'
 import { buildCurrentOriginAuthUiUrl } from '../modules/auth-ui-base'
 import { getServerAuthBootstrapContext } from '../modules/server-auth-context'
 
@@ -27,7 +28,7 @@ const error = computed(() => {
   return typeof value === 'string' ? value : null
 })
 
-const verified = computed(() => route.query.verified === 'true')
+const verified = computed(() => !error.value && route.query.verified === 'true')
 
 // Captured at mount time on the original tab (the one that just submitted the
 // sign-up form) so that, when the verification tab signals success, we know
@@ -82,18 +83,19 @@ async function resumeIfSessionReady(): Promise<boolean> {
   }
 }
 
+// Keep the result tab visible. Only the original pending tab resumes its login flow.
 onMounted(async () => {
-  // Verification-success tab: announce to any sibling pending tab that the
-  // session cookie has been written, then stay put so the user sees the
-  // success message. The pending tab does the OIDC continuation.
   if (verified.value) {
+    trackEmailVerificationCompleted()
     if (isSupported.value)
       post('verified')
     return
   }
 
-  if (error.value)
+  if (error.value) {
+    trackEmailVerificationFailed()
     return
+  }
 
   // Pending tab: cover the case where verification already happened before
   // this tab subscribed (back-button navigation, page reload, etc.). One

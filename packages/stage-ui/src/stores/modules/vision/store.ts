@@ -1,28 +1,30 @@
+import type {} from 'pinia-plugin-synced'
+
 import { useLocalStorageManualReset } from '@proj-airi/stage-shared/composables'
 import { refManualReset } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { computed } from 'vue'
 
-import { useProvidersStore } from '../../providers'
+import { useProviderStore } from '../../providers/provider'
 
 export const useVisionStore = defineStore('vision', () => {
-  const providersStore = useProvidersStore()
+  const providersStore = useProviderStore()
 
-  const activeProvider = useLocalStorageManualReset('settings/vision/active-provider', '')
-  const activeModel = useLocalStorageManualReset('settings/vision/active-model', '')
-  const activeCustomModelName = useLocalStorageManualReset('settings/vision/active-custom-model', '')
-  const ollamaThinkingEnabled = useLocalStorageManualReset('settings/vision/ollama-thinking-enabled', false)
+  // Pinia synchronization owns live cross-window state. localStorage only
+  // loads and saves durable values for this synchronized store.
+  const persistenceOptions = { listenToStorageChanges: false }
+
+  const activeProvider = useLocalStorageManualReset('settings/vision/active-provider', '', persistenceOptions)
+  const activeModel = useLocalStorageManualReset('settings/vision/active-model', '', persistenceOptions)
+  const activeCustomModelName = useLocalStorageManualReset('settings/vision/active-custom-model', '', persistenceOptions)
+  const ollamaThinkingEnabled = useLocalStorageManualReset('settings/vision/ollama-thinking-enabled', false, persistenceOptions)
+  const useForChat = useLocalStorageManualReset('settings/vision/use-for-chat', true, persistenceOptions)
+  /** Whether the vision model reads the images that tools return, such as computer-use screenshots. */
+  const useForToolImages = useLocalStorageManualReset('settings/vision/use-for-tool-images', true, persistenceOptions)
   const modelSearchQuery = refManualReset('')
 
-  const providerMetadata = computed(() => {
-    if (!activeProvider.value)
-      return null
-
-    return providersStore.providerMetadata[activeProvider.value] ?? null
-  })
-
   const supportsModelListing = computed(() => {
-    return providerMetadata.value?.capabilities.listModels !== undefined
+    return providersStore.supportsModelListing(activeProvider.value)
   })
 
   const providerModels = computed(() => {
@@ -57,13 +59,13 @@ export const useVisionStore = defineStore('vision', () => {
   }
 
   async function loadModelsForProvider(provider: string) {
-    if (provider && providerMetadata.value?.capabilities.listModels !== undefined) {
+    if (providersStore.supportsModelListing(provider)) {
       await providersStore.fetchModelsForProvider(provider)
     }
   }
 
   async function getModelsForProvider(provider: string) {
-    if (provider && providerMetadata.value?.capabilities.listModels !== undefined) {
+    if (providersStore.supportsModelListing(provider)) {
       return providersStore.getModelsForProvider(provider)
     }
 
@@ -71,11 +73,15 @@ export const useVisionStore = defineStore('vision', () => {
   }
 
   function resetState() {
+    useForChat.reset()
+    useForToolImages.reset()
     activeProvider.reset()
     resetModelSelection()
   }
 
   return {
+    useForChat,
+    useForToolImages,
     activeProvider,
     activeModel,
     customModelName: activeCustomModelName,
@@ -93,4 +99,8 @@ export const useVisionStore = defineStore('vision', () => {
     getModelsForProvider,
     resetState,
   }
+}, {
+  synced: {
+    state: true,
+  },
 })

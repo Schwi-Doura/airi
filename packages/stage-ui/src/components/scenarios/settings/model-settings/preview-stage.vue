@@ -1,13 +1,19 @@
 <script setup lang="ts">
+import type { Live2DContext } from '@proj-airi/stage-ui-live2d'
+
 import type { ModelSettingsRuntimeSnapshot } from './runtime'
 
 import { Live2DScene } from '@proj-airi/stage-ui-live2d'
+import { MMDScene } from '@proj-airi/stage-ui-mmd'
 import { SpineScene } from '@proj-airi/stage-ui-spine'
+import { TachieScene } from '@proj-airi/stage-ui-tachie'
 import { ThreeScene, useModelStore } from '@proj-airi/stage-ui-three'
 import { useMouse } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
+import { useSharedLive2DExpressionPreview } from '../../../../stores/live2d'
+import { useAiriCardStore } from '../../../../stores/modules/airi-card'
 import { useSettings } from '../../../../stores/settings'
 import {
   createEmptyModelSettingsRuntimeSnapshot,
@@ -16,8 +22,11 @@ import {
 
 const props = defineProps<{
   live2dSceneClass?: string | string[]
+  live2dContext: Live2DContext
   vrmSceneClass?: string | string[]
   spineSceneClass?: string | string[]
+  tachieSceneClass?: string | string[]
+  mmdSceneClass?: string | string[]
 }>()
 
 const emit = defineEmits<{
@@ -26,11 +35,17 @@ const emit = defineEmits<{
 
 const settingsStore = useSettings()
 const modelStore = useModelStore()
+const { activeCardId, selectedAvatarModelId } = storeToRefs(useAiriCardStore())
+useSharedLive2DExpressionPreview(props.live2dContext, activeCardId, selectedAvatarModelId)
 const live2dSceneRef = ref<{ canvasElement: () => HTMLCanvasElement | undefined }>()
 const vrmSceneRef = ref<{ canvasElement: () => HTMLCanvasElement | undefined }>()
 const spineSceneRef = ref<{ canvasElement: () => HTMLCanvasElement | undefined }>()
+const tachieSceneRef = ref<{ canvasElement: () => HTMLCanvasElement | undefined }>()
+const mmdSceneRef = ref<{ canvasElement: () => HTMLCanvasElement | undefined }>()
 const live2dComponentState = ref<'pending' | 'loading' | 'mounted'>('pending')
 const spineComponentState = ref<'pending' | 'loading' | 'mounted'>('pending')
+const tachieComponentState = ref<'pending' | 'loading' | 'mounted'>('pending')
+const mmdComponentState = ref<'pending' | 'loading' | 'mounted'>('pending')
 const vrmPreviewStageInstanceId = `model-settings-preview-stage:${Math.random().toString(36).slice(2, 10)}`
 
 const {
@@ -53,6 +68,8 @@ const { sceneMutationLocked, scenePhase } = storeToRefs(modelStore)
 const live2dSceneClassList = computed(() => normalizeClassList(props.live2dSceneClass))
 const vrmSceneClassList = computed(() => normalizeClassList(props.vrmSceneClass))
 const spineSceneClassList = computed(() => normalizeClassList(props.spineSceneClass))
+const tachieSceneClassList = computed(() => normalizeClassList(props.tachieSceneClass))
+const mmdSceneClassList = computed(() => normalizeClassList(props.mmdSceneClass))
 
 function normalizeClassList(value?: string | string[]) {
   if (!value)
@@ -79,6 +96,12 @@ async function capturePreviewFrame() {
 
   if (stageModelRenderer.value === 'spine')
     return captureCanvasFrame(spineSceneRef.value?.canvasElement())
+
+  if (stageModelRenderer.value === 'tachie')
+    return captureCanvasFrame(tachieSceneRef.value?.canvasElement())
+
+  if (stageModelRenderer.value === 'mmd')
+    return captureCanvasFrame(mmdSceneRef.value?.canvasElement())
 
   return undefined
 }
@@ -126,6 +149,34 @@ const runtimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() => {
     })
   }
 
+  if (stageModelRenderer.value === 'tachie') {
+    const phase = resolveComponentStateToRuntimePhase(tachieComponentState.value, { hasModel })
+
+    return createEmptyModelSettingsRuntimeSnapshot({
+      ownerInstanceId: vrmPreviewStageInstanceId,
+      renderer: 'tachie',
+      phase,
+      controlsLocked: hasModel ? phase !== 'mounted' : false,
+      previewAvailable: hasModel,
+      canCapturePreview: !!tachieSceneRef.value?.canvasElement(),
+      updatedAt: Date.now(),
+    })
+  }
+
+  if (stageModelRenderer.value === 'mmd') {
+    const phase = resolveComponentStateToRuntimePhase(mmdComponentState.value, { hasModel })
+
+    return createEmptyModelSettingsRuntimeSnapshot({
+      ownerInstanceId: vrmPreviewStageInstanceId,
+      renderer: 'mmd',
+      phase,
+      controlsLocked: hasModel ? phase !== 'mounted' : false,
+      previewAvailable: hasModel,
+      canCapturePreview: !!mmdSceneRef.value?.canvasElement(),
+      updatedAt: Date.now(),
+    })
+  }
+
   if (stageModelRenderer.value === 'godot') {
     return createEmptyModelSettingsRuntimeSnapshot({
       ownerInstanceId: vrmPreviewStageInstanceId,
@@ -163,6 +214,7 @@ const cursorPosition = computed(() => ({
       <Live2DScene
         ref="live2dSceneRef"
         v-model:state="live2dComponentState"
+        :context="live2dContext"
         :model-src="stageModelSelectedUrl"
         :model-id="stageModelSelected"
         :cursor-position="cursorPosition"
@@ -173,7 +225,7 @@ const cursorPosition = computed(() => ({
   </template>
   <template v-if="stageModelRenderer === 'vrm'">
     <div :class="vrmSceneClassList">
-      <ThreeScene ref="vrmSceneRef" :cursor-position="cursorPosition" :model-src="stageModelSelectedUrl" />
+      <ThreeScene ref="vrmSceneRef" :cursor-position="cursorPosition" :model-id="stageModelSelected" :model-src="stageModelSelectedUrl" />
     </div>
   </template>
   <template v-if="stageModelRenderer === 'spine'">
@@ -188,6 +240,30 @@ const cursorPosition = computed(() => ({
         :idle-animation-enabled="spineIdleAnimationEnabled"
         :max-fps="spineMaxFps"
         :render-scale="spineRenderScale"
+      />
+    </div>
+  </template>
+  <template v-if="stageModelRenderer === 'mmd'">
+    <div :class="mmdSceneClassList">
+      <MMDScene
+        ref="mmdSceneRef"
+        v-model:state="mmdComponentState"
+        :model-src="stageModelSelectedUrl"
+        :model-id="stageModelSelected"
+        :cursor-position="cursorPosition"
+        :enable-orbit-controls="true"
+      />
+    </div>
+  </template>
+  <template v-if="stageModelRenderer === 'tachie'">
+    <div :class="tachieSceneClassList">
+      <TachieScene
+        ref="tachieSceneRef"
+        v-model:state="tachieComponentState"
+        :model-src="stageModelSelectedUrl"
+        :model-id="stageModelSelected"
+        :theme-colors-hue="themeColorsHue"
+        :theme-colors-hue-dynamic="themeColorsHueDynamic"
       />
     </div>
   </template>

@@ -1,20 +1,25 @@
 import type { BeatSyncDetectorState } from '@proj-airi/stage-shared/beat-sync'
 
-import { getBeatSyncState, listenBeatSyncStateChange } from '@proj-airi/stage-shared/beat-sync'
+import { getBeatSyncState, isBeatSyncSupported, listenBeatSyncStateChange } from '@proj-airi/stage-shared/beat-sync'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import factorioIcon from '../assets/factorio-simple.png'
 
+import { useMemoryStore } from '../stores/memory'
 import { useArtistryStore } from '../stores/modules/artistry'
 import { useConsciousnessStore } from '../stores/modules/consciousness'
 import { useDiscordStore } from '../stores/modules/discord'
 import { useFactorioStore } from '../stores/modules/gaming-factorio'
 import { useMinecraftStore } from '../stores/modules/gaming-minecraft'
 import { useHearingStore } from '../stores/modules/hearing'
+import { useHomeAssistantStore } from '../stores/modules/home-assistant'
 import { useSpeechStore } from '../stores/modules/speech'
+import { useStickersStore } from '../stores/modules/stickers'
 import { useTwitterStore } from '../stores/modules/twitter'
 import { useVisionStore } from '../stores/modules/vision'
+import { useWebSearchStore } from '../stores/modules/web-search'
+import { useToolCardsStore } from '../stores/tool-cards'
 
 export interface Module {
   id: string
@@ -34,14 +39,20 @@ export function useModulesList() {
   // Initialize stores
   const consciousnessStore = useConsciousnessStore()
   const speechStore = useSpeechStore()
+  const stickersStore = useStickersStore()
   const hearingStore = useHearingStore()
   const visionStore = useVisionStore()
   const discordStore = useDiscordStore()
   const twitterStore = useTwitterStore()
+  const webSearchStore = useWebSearchStore()
   const minecraftStore = useMinecraftStore()
   const factorioStore = useFactorioStore()
+  const homeAssistantStore = useHomeAssistantStore()
   const artistryStore = useArtistryStore()
+  const memoryStore = useMemoryStore()
+  const toolCardsStore = useToolCardsStore()
   const beatSyncState = ref<BeatSyncDetectorState>()
+  const beatSyncSupported = isBeatSyncSupported()
 
   minecraftStore.initialize()
 
@@ -83,6 +94,24 @@ export function useModulesList() {
       category: 'essential',
     },
     {
+      id: 'stickers',
+      name: t('settings.pages.modules.stickers.title'),
+      description: t('settings.pages.modules.stickers.description'),
+      icon: 'i-solar:sticker-smile-circle-bold-duotone',
+      to: '/settings/modules/stickers',
+      configured: stickersStore.enabled,
+      category: 'essential',
+    },
+    {
+      id: 'web-search',
+      name: t('settings.pages.modules.web-search.title'),
+      description: t('settings.pages.modules.web-search.description'),
+      icon: 'i-solar:magnifer-bold-duotone',
+      to: '/settings/modules/web-search',
+      configured: webSearchStore.configured,
+      category: 'essential',
+    },
+    {
       id: 'artistry',
       name: t('settings.pages.modules.artistry.title'),
       description: t('settings.pages.modules.artistry.description'),
@@ -106,7 +135,16 @@ export function useModulesList() {
       description: t('settings.pages.modules.memory-long-term.description'),
       icon: 'i-solar:book-bookmark-bold-duotone',
       to: '/settings/modules/memory-long-term',
-      configured: false,
+      configured: memoryStore.enabled,
+      category: 'essential',
+    },
+    {
+      id: 'tool-cards',
+      name: t('settings.pages.modules.tool-cards.title'),
+      description: t('settings.pages.modules.tool-cards.description'),
+      icon: 'i-solar:widget-5-bold-duotone',
+      to: '/settings/modules/tool-cards',
+      configured: toolCardsStore.enabled || toolCardsStore.replyCardsEnabled,
       category: 'essential',
     },
     {
@@ -146,6 +184,15 @@ export function useModulesList() {
       category: 'gaming',
     },
     {
+      id: 'home-assistant',
+      name: t('settings.pages.modules.home-assistant.title'),
+      description: t('settings.pages.modules.home-assistant.description'),
+      icon: 'i-solar:home-smile-bold-duotone',
+      to: '/settings/modules/home-assistant',
+      configured: homeAssistantStore.configured,
+      category: 'essential',
+    },
+    {
       id: 'mcp-server',
       name: t('settings.pages.modules.mcp-server.title'),
       description: t('settings.pages.modules.mcp-server.description'),
@@ -154,15 +201,17 @@ export function useModulesList() {
       configured: false,
       category: 'essential',
     },
-    {
-      id: 'beat-sync',
-      name: t('settings.pages.modules.beat_sync.title'),
-      description: t('settings.pages.modules.beat_sync.description'),
-      icon: 'i-solar:music-notes-bold-duotone',
-      to: '/settings/modules/beat-sync',
-      configured: beatSyncState.value?.isActive ?? false,
-      category: 'essential',
-    },
+    ...(beatSyncSupported
+      ? [{
+          id: 'beat-sync',
+          name: t('settings.pages.modules.beat_sync.title'),
+          description: t('settings.pages.modules.beat_sync.description'),
+          icon: 'i-solar:music-notes-bold-duotone',
+          to: '/settings/modules/beat-sync',
+          configured: beatSyncState.value?.isActive ?? false,
+          category: 'essential',
+        }]
+      : []),
   ])
 
   const categorizedModules = computed(() => {
@@ -185,6 +234,9 @@ export function useModulesList() {
 
   // TODO(Makito): We can make this a reactive value from a synthetic store.
   onMounted(() => {
+    if (!beatSyncSupported)
+      return
+
     getBeatSyncState().then(initialState => beatSyncState.value = initialState)
     const removeListener = listenBeatSyncStateChange(newState => beatSyncState.value = { ...newState })
     onUnmounted(() => removeListener())

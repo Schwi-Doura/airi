@@ -1,16 +1,18 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
 import type { ResizeDirection } from '@proj-airi/electron-eventa'
-import type { BrowserWindow, BrowserWindowConstructorOptions } from 'electron'
+import type { BrowserWindow, BrowserWindowConstructorOptions, Rectangle } from 'electron'
 
 import type { I18n } from '../../libs/i18n'
 import type { ServerChannel } from '../../services/airi/channel-server'
 
 import { isRendererUnavailable } from '@proj-airi/electron-vueuse/main'
-import { isMacOS } from 'std-env'
+import { shell } from 'electron'
+import { isMacOS, isWindows } from 'std-env'
 
 import { createServerChannelService } from '../../services/airi/channel-server'
 import { createI18nService } from '../../services/airi/i18n'
-import { createAppService, createPowerMonitorService, createScreenService, createWindowService } from '../../services/electron'
+import { createAppService, createPowerMonitorService, createScreenService, createSystemPreferencesService, createWindowService } from '../../services/electron'
+import { WindowBackdropService } from '../../services/electron/window-backdrop'
 
 export function toggleWindowShow(window?: BrowserWindow | null): void {
   if (!window) {
@@ -37,6 +39,46 @@ export function transparentWindowConfig(): BrowserWindowConstructorOptions {
   }
 }
 
+/**
+ * Blocks renderer navigation while allowing safe links to open in the system browser.
+ *
+ * Use when:
+ * - Creating an Electron window that receives the shared privileged preload
+ *
+ * Expects:
+ * - The window loads only AIRI-controlled renderer content
+ *
+ * Returns:
+ * - Nothing; installs navigation and popup guards on the window's web contents
+ */
+export function protectPrivilegedWindowNavigation(window: BrowserWindow): void {
+  function openSafeExternalUrl(rawUrl: string): void {
+    try {
+      const url = new URL(rawUrl)
+      if (url.protocol === 'http:' || url.protocol === 'https:' || url.protocol === 'mailto:')
+        void shell.openExternal(url.toString())
+    }
+    catch {
+      // Ignore malformed navigation targets.
+    }
+  }
+
+  window.webContents.setWindowOpenHandler((details) => {
+    openSafeExternalUrl(details.url)
+    return { action: 'deny' }
+  })
+  window.webContents.on('will-navigate', (event, navigationUrl) => {
+    // Renderer-initiated reloads keep the exact current URL in both packaged
+    // (`file:`) and Vite (`http:`) builds. Let those through without widening
+    // navigation to other local files or development-server paths.
+    if (navigationUrl === window.webContents.getURL())
+      return
+
+    event.preventDefault()
+    openSafeExternalUrl(navigationUrl)
+  })
+}
+
 export function blurryWindowConfig(): BrowserWindowConstructorOptions {
   return {
     vibrancy: 'hud',
@@ -51,15 +93,48 @@ export function spotlightLikeWindowConfig(): BrowserWindowConstructorOptions {
   }
 }
 
-export function resizeWindowByDelta(params: {
-  window: BrowserWindow
+/**
+ * Sets the window always-on-top level according to the host platform.
+ *
+ * macOS and Windows support the screen-saver level and relative level layering,
+ * while Linux (X11/Wayland) works reliably with standard always-on-top.
+ */
+export function setWindowAlwaysOnTop(
+  window: Pick<BrowserWindow, 'setAlwaysOnTop'>,
+  flag: boolean,
+  relativeLevel = 1,
+): void {
+  if (!flag) {
+    window.setAlwaysOnTop(false)
+    return
+  }
+
+  if (isMacOS || isWindows) {
+    window.setAlwaysOnTop(true, 'screen-saver', relativeLevel)
+    return
+  }
+
+  window.setAlwaysOnTop(true)
+}
+
+interface ResizeByDeltaOptions {
   deltaX: number
   deltaY: number
   direction: ResizeDirection
   minWidth?: number
   minHeight?: number
-}): void {
-  const bounds = params.window.getBounds()
+}
+
+/**
+ * Bounds after an edge or corner drag of `direction` by the cursor movement.
+ * The edges opposite `direction` stay in place, and the size stops at the
+ * minimum instead of moving those edges.
+ *
+ * @example
+ * resizeBoundsByDelta({ x: 100, y: 100, width: 400, height: 500 }, { deltaX: -20, deltaY: -30, direction: 'nw' })
+ * // => { x: 80, y: 70, width: 420, height: 530 }
+ */
+export function resizeBoundsByDelta(bounds: Rectangle, params: ResizeByDeltaOptions): Rectangle {
   const minWidth = params.minWidth ?? 100
   const minHeight = params.minHeight ?? 200
 
@@ -87,7 +162,11 @@ export function resizeWindowByDelta(params: {
     }
   }
 
-  params.window.setBounds({ x, y, width, height })
+  return { x, y, width, height }
+}
+
+export function resizeWindowByDelta(params: ResizeByDeltaOptions & { window: BrowserWindow }): void {
+  params.window.setBounds(resizeBoundsByDelta(params.window.getBounds(), params))
 }
 
 export async function setupBaseWindowElectronInvokes(params: {
@@ -95,11 +174,15 @@ export async function setupBaseWindowElectronInvokes(params: {
   window: BrowserWindow
   serverChannel: ServerChannel
   i18n: I18n
+  /** Owns the window's pin instead of the renderer request applying it directly. */
+  setAlwaysOnTop?: (flag: boolean) => void
 }) {
   createScreenService({ context: params.context, window: params.window })
-  createWindowService({ context: params.context, window: params.window })
+  createWindowService({ context: params.context, window: params.window, setAlwaysOnTop: params.setAlwaysOnTop })
   createAppService({ context: params.context, window: params.window })
   createPowerMonitorService({ context: params.context, window: params.window })
+  createSystemPreferencesService({ context: params.context, window: params.window })
+  WindowBackdropService.install(params.window)
 
   await createI18nService({ context: params.context, window: params.window, i18n: params.i18n })
 

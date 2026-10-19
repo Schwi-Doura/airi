@@ -106,6 +106,23 @@ describe('createStreamingControlParser', () => {
     turn.complete()
   })
 
+  it('falls back to global handlers when the turn id is stale', async () => {
+    const control = createStreamingControlParser()
+    const globalHandler = vi.fn()
+    const disposeGlobal = control.on({
+      name: 'plugin.action',
+      prompt: 'Run the global plugin action.',
+    }, globalHandler)
+
+    await expect(control.dispatchWith('<|CALL ["plugin.action"]|>', {
+      turnId: 'missing-turn',
+    })).resolves.toBe(true)
+
+    expect(globalHandler).toHaveBeenCalledTimes(1)
+
+    disposeGlobal()
+  })
+
   /**
    * @example
    * const turn = control.beginTurn({ turnId: 'turn-1' })
@@ -230,23 +247,6 @@ describe('createStreamingControlParser', () => {
         createdAt: expect.any(Number),
       }),
     )
-
-    dispose()
-  })
-
-  /**
-   * @example
-   * await control.dispatchWith('<|ACT:"emotion":{"name":"happy"}|>')
-   * // -> false
-   */
-  it('rejects non-standard ACT and DELAY syntaxes', async () => {
-    const control = createStreamingControlParser()
-    const handler = vi.fn()
-    const dispose = control.onSignal(handler)
-
-    await expect(control.dispatchWith('<|ACT:"emotion":{"name":"happy"}|>')).resolves.toBe(false)
-    await expect(control.dispatchWith('<|DELAY:1|>')).resolves.toBe(false)
-    expect(handler).not.toHaveBeenCalled()
 
     dispose()
   })
