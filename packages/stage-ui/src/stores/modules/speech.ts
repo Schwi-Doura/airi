@@ -385,6 +385,15 @@ export const useSpeechStore = defineStore('speech', () => {
   function ensureActiveSpeechModel() {
     ensureStreamingDefaultModel()
 
+    if (providersStore.findProviderDefinition(activeSpeechProvider.value)?.id === 'novelai-speech') {
+      if (!['v1', 'v2'].includes(activeSpeechModel.value)) {
+        const config = providerStore.getProviderConfig(activeSpeechProvider.value)
+        activeSpeechModel.value = config?.model === 'v1' ? 'v1' : 'v2'
+        clearVoiceSelection()
+      }
+      return
+    }
+
     if (activeSpeechProvider.value !== OFFICIAL_SPEECH_PROVIDER_ID) {
       ensureSingleOptionSpeechModel()
       return
@@ -471,6 +480,11 @@ export const useSpeechStore = defineStore('speech', () => {
     // A selection watcher can run before the ownership watcher reaches its RPC.
     // Reject expired recommendations at their consumer as well as on notification.
     discardExpiredVoiceCatalogs()
+    if (providersStore.findProviderDefinition(activeSpeechProvider.value)?.id === 'novelai-speech') {
+      const voices = availableVoices.value[activeSpeechProvider.value] ?? []
+      if (voices.length && !voices.some(voice => voice.id === activeSpeechVoiceId.value))
+        activeSpeechVoiceId.value = voices.find(voice => voice.id === 'custom')?.id ?? ''
+    }
     const selected = pickOfficialSpeechVoice({
       activeSpeechProvider: activeSpeechProvider.value,
       activeSpeechVoiceId: activeSpeechVoiceId.value,

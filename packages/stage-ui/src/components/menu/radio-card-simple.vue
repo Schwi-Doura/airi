@@ -31,6 +31,7 @@ const modelValue = defineModel<string>({ required: true })
     ]"
     flex="~ col"
     block min-w-50 w-fit cursor-pointer items-start rounded-xl p-4 text-left
+    @click="modelValue = value"
   >
     <input
       v-model="modelValue"
@@ -104,6 +105,7 @@ const modelValue = defineModel<string>({ required: true })
 .form_radio-card-simple::before {
   --at-apply: 'bg-gradient-to-r from-primary-500/0 to-primary-500/0 dark:from-primary-400/0 dark:to-primary-400/0';
   content: '';
+  pointer-events: none;
   position: absolute;
   inset: 0;
   z-index: 0;

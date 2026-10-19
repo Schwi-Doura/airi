@@ -2,6 +2,24 @@
 
 Shared core for stage
 
+## NovelAI providers
+
+NovelAI supports chat, speech, and desktop image generation with a Persistent API Token.
+Configure chat and speech through Providers. Select each configured provider in its module.
+Speech supports TTS v1/v2 and the `custom`, `Maria`, `Kayra`, and `Clio` voice seeds.
+The `custom` voice uses the saved seed. An empty seed uses `Maria`.
+
+The chat adapter decodes native token responses with the GLM-4.6 tokenizer.
+It translates explicit text tool requests into xsAI tool calls. Ordinary JSON examples remain chat text.
+Image bytes stay in tool results for display and are omitted from the text model's follow-up request.
+
+Configure image generation under Providers > Artistry > NovelAI Diffusion.
+The settings offer V3, V4, V4.5, and V5 model IDs, plus a custom ID field.
+The positive prompt prefix precedes each drawing description. Negative prompts combine with request-specific negatives.
+Both fields start empty and support local persistence and cross-window synchronization.
+The character editor can select NovelAI as an Artistry override.
+Image-to-image and voice cloning are not exposed.
+
 ## Experimental features
 
 Register flags in `libs/feature-flags.ts`. Read their state through `useFeatureFlagsStore().isEnabled(key)`.

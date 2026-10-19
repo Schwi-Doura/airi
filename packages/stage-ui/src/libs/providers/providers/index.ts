@@ -9,6 +9,7 @@ import './sherpaw'
 import './local-audio'
 import './kokoro-local'
 import './nvidia'
+import './novelai'
 import './official'
 import './prompt-api'
 

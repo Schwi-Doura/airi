@@ -15,6 +15,11 @@ export const artistryConfigSchema = object({
     nanobananaApiKey: optional(string(), ''),
     nanobananaModel: optional(string(), 'gemini-3.1-flash-image-preview'),
     nanobananaResolution: optional(string(), '1K'),
+    novelaiApiKey: optional(string(), ''),
+    novelaiBaseUrl: optional(string(), 'https://image.novelai.net/'),
+    novelaiModel: optional(string(), 'nai-diffusion-3'),
+    novelaiPromptPrefix: optional(string(), ''),
+    novelaiNegativePrompt: optional(string(), ''),
   }), {}),
 })
 

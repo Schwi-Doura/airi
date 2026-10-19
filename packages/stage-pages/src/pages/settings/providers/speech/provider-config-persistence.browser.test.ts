@@ -10,6 +10,7 @@ import { createI18n } from 'vue-i18n'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import CometApiSpeechPage from './comet-api-speech.vue'
+import NovelAISpeechPage from './novelai-speech.vue'
 import OpenAICompatibleSpeechPage from './openai-compatible-audio-speech.vue'
 
 import 'virtual:uno.css'
@@ -47,6 +48,24 @@ describe('speech provider configuration persistence', () => {
     disposePinia(pinia)
     vi.unstubAllGlobals()
     localStorage.clear()
+  })
+
+  // NovelAI has a local voice catalogue. Entering credentials must load it even
+  // when validation finishes after the settings component has mounted.
+  it('loads NovelAI voices after entering credentials and keeps them on reopen', async () => {
+    const screen = await renderPage(NovelAISpeechPage)
+    await page.getByPlaceholder('Persistent API Token').fill('novelai-test-token')
+    await expect.element(screen.getByRole('button', { name: 'Test Voice', exact: true }), { timeout: 5000 }).toBeEnabled()
+    await screen.getByRole('combobox').last().click()
+    await expect.element(page.getByRole('option', { name: 'Clio', exact: true })).toBeVisible()
+    await page.getByRole('option', { name: 'Clio', exact: true }).click()
+
+    expect(useProviderConfigStore(pinia).getProviderConfig('novelai-speech')?.apiKey).toBe('novelai-test-token')
+    screen.unmount()
+    const reopened = await renderPage(NovelAISpeechPage)
+    await expect.element(reopened.getByRole('button', { name: 'Test Voice', exact: true }), { timeout: 5000 }).toBeEnabled()
+    await reopened.getByRole('combobox').last().click()
+    await expect.element(page.getByRole('option', { name: 'Clio', exact: true })).toBeVisible()
   })
 
   // ROOT CAUSE:

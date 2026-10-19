@@ -43,6 +43,31 @@ function authenticateOfficialProvider(): void {
 }
 
 describe('speech store helpers', () => {
+  it('selects the saved NovelAI model and a usable custom voice', async () => {
+    const providers = useProviderStore()
+    await providers.initializeProvider('novelai-speech')
+    await useProviderConfigStore().patchProviderConfig('novelai-speech', { apiKey: 'test-token', model: 'v2', seed: '' })
+    const speech = useSpeechStore()
+    await speech.selectProviderModel('novelai-speech', '')
+    await speech.loadVoicesForProvider('novelai-speech')
+    await speech.ensureActiveSpeechVoice()
+    expect(speech.activeSpeechModel).toBe('v2')
+    expect(speech.activeSpeechVoiceId).toBe('custom')
+    expect(speech.configured).toBe(true)
+  })
+
+  it('keeps an explicit NovelAI model and voice through catalog refreshes', async () => {
+    const providers = useProviderStore()
+    await providers.initializeProvider('novelai-speech')
+    await useProviderConfigStore().patchProviderConfig('novelai-speech', { apiKey: 'test-token', model: 'v2' })
+    const speech = useSpeechStore()
+    await speech.selectProviderModel('novelai-speech', 'v1', 'Clio')
+    await speech.loadVoicesForProvider('novelai-speech', 'v1')
+    await speech.ensureActiveSpeechVoice()
+    expect(speech.activeSpeechModel).toBe('v1')
+    expect(speech.activeSpeechVoiceId).toBe('Clio')
+  })
+
   beforeEach(() => {
     i18nState.locale.value = 'en-US'
     setActivePinia(createPinia())

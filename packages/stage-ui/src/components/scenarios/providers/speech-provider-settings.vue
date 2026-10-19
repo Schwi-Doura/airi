@@ -115,6 +115,16 @@ function hasUnsavedField(field: string) {
 
 watch(() => providers.value[props.providerId], reconcileSettings, { deep: true })
 
+// Validation can complete after the page mounts, including after a saved edit.
+watch(
+  [() => props.providerId, () => providerStore.configuredProviders[props.providerId]],
+  async ([providerId, configured]) => {
+    if (configured)
+      await speechStore.loadVoicesForProvider(providerId)
+  },
+  { immediate: true },
+)
+
 onMounted(async () => {
   await providersStore.initializeProvider(props.providerId)
 

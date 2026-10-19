@@ -45,6 +45,13 @@ const availableProviders = computed(() => [
           icon: 'i-solar:gallery-round-bold-duotone',
           configRoute: '/settings/providers/artistry/nanobanana',
         },
+        {
+          id: 'novelai',
+          name: 'NovelAI Diffusion',
+          description: t('settings.pages.providers.provider.novelai.image-description'),
+          icon: 'i-solar:gallery-bold-duotone',
+          configRoute: '/settings/providers/artistry/novelai',
+        },
       ]),
 ])
 </script>

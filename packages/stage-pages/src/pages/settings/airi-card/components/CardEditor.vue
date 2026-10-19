@@ -235,6 +235,7 @@ const artistryProviderOptions = computed(() => {
       : [
           { value: 'replicate', label: 'Replicate' },
           { value: 'nanobanana', label: 'Nano Banana' },
+          { value: 'novelai', label: 'NovelAI Diffusion' },
         ]),
   ], selectedArtistryProvider.value)
 })
