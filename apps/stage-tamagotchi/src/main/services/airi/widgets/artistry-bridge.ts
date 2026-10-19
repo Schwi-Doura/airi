@@ -13,10 +13,12 @@ import { useLogg } from '@guiiai/logg'
 import { defineInvokeHandler } from '@moeru/eventa'
 import { errorMessageFrom } from '@moeru/std'
 import { artistryGenerateHeadless, artistrySyncConfig, artistryTestComfyUIConnection, errorMessageFromValue } from '@proj-airi/stage-shared'
+import { net } from 'electron'
 import { injeca } from 'injeca'
 
 import { ComfyUIProvider } from './providers/comfyui'
 import { NanoBananaProvider } from './providers/nanobanana'
+import { NovelAIProvider } from './providers/novelai'
 import { ReplicateProvider } from './providers/replicate'
 
 const log = useLogg('artistry-bridge').useGlobalConfig()
@@ -103,6 +105,9 @@ export const artistryProviders = new Map<string, ArtistryProvider>()
 artistryProviders.set('comfyui', new ComfyUIProvider())
 artistryProviders.set('replicate', new ReplicateProvider())
 artistryProviders.set('nanobanana', new NanoBananaProvider())
+// Electron's network stack honors the desktop proxy configuration; Node fetch
+// times out on networks where Chromium can still reach NovelAI successfully.
+artistryProviders.set('novelai', new NovelAIProvider((input, init) => net.fetch(input instanceof URL ? input.href : input, init)))
 
 // Deduplication map for headless requests
 const pendingHeadlessRequests = new Map<string, Promise<{ imageUrl?: string, base64?: string, error?: string }>>()

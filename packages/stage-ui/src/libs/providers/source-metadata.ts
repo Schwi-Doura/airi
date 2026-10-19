@@ -75,6 +75,8 @@ const providerSourceMetadataById = {
   'moonshot-ai': paidCloud,
   'n1n': paidCloud,
   'novita-ai': paidCloud,
+  'novelai': paidCloud,
+  'novelai-speech': paidCloud,
   'nvidia': paidCloud,
   'official-provider': recommendedPaidCloud,
   'official-provider-speech': recommendedPaidCloud,

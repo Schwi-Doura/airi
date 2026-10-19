@@ -21,5 +21,6 @@ To make a new image on the same canvas, just update it again with a new prompt a
 - Always use \`"artistry"\` as the component name
 - Always include a descriptive \`prompt\` when generating
 - Always set \`status\` to \`"generating"\` to trigger generation
+- Never set \`status\` to \`"done"\` yourself or claim success before the application reports it
 - You can have multiple canvases by using different IDs
 - Canvases stay on screen until removed — you do not need to re-spawn them`

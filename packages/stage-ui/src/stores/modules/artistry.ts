@@ -59,6 +59,13 @@ export const useArtistryStore = defineStore('artistry', () => {
     4,
   )
 
+  // Native NovelAI image credentials are kept separately from chat and TTS endpoints.
+  const novelaiApiKey = useLocalStorageManualReset<string>('artistry-novelai-api-key', '')
+  const novelaiBaseUrl = useLocalStorageManualReset<string>('artistry-novelai-base-url', 'https://image.novelai.net/')
+  const novelaiModel = useLocalStorageManualReset<string>('artistry-novelai-model', 'nai-diffusion-3')
+  const novelaiPromptPrefix = useLocalStorageManualReset<string>('artistry-novelai-prompt-prefix', '')
+  const novelaiNegativePrompt = useLocalStorageManualReset<string>('artistry-novelai-negative-prompt', '')
+
   // --- Nano Banana (Google AI Studio) provider settings ---
   const nanobananaApiKey = useLocalStorageManualReset<string>('artistry-nanobanana-api-key', '')
   const nanobananaModel = useLocalStorageManualReset<string>(
@@ -101,6 +108,11 @@ export const useArtistryStore = defineStore('artistry', () => {
     nanobananaApiKey.reset()
     nanobananaModel.reset()
     nanobananaResolution.reset()
+    novelaiApiKey.reset()
+    novelaiBaseUrl.reset()
+    novelaiModel.reset()
+    novelaiPromptPrefix.reset()
+    novelaiNegativePrompt.reset()
 
     // Sync active state
     resetToGlobal()
@@ -134,6 +146,9 @@ export const useArtistryStore = defineStore('artistry', () => {
       return !!nanobananaApiKey.value
     }
 
+    if (activeProvider.value === 'novelai')
+      return !!novelaiApiKey.value.trim()
+
     return true
   })
 
@@ -148,6 +163,11 @@ export const useArtistryStore = defineStore('artistry', () => {
     nanobananaApiKey: nanobananaApiKey.value,
     nanobananaModel: nanobananaModel.value,
     nanobananaResolution: nanobananaResolution.value,
+    novelaiApiKey: novelaiApiKey.value,
+    novelaiBaseUrl: novelaiBaseUrl.value,
+    novelaiModel: novelaiModel.value,
+    novelaiPromptPrefix: novelaiPromptPrefix.value,
+    novelaiNegativePrompt: novelaiNegativePrompt.value,
   }))
 
   return {
@@ -180,6 +200,11 @@ export const useArtistryStore = defineStore('artistry', () => {
     nanobananaApiKey,
     nanobananaModel,
     nanobananaResolution,
+    novelaiApiKey,
+    novelaiBaseUrl,
+    novelaiModel,
+    novelaiPromptPrefix,
+    novelaiNegativePrompt,
 
     resetToGlobal,
     resetState,
@@ -221,6 +246,11 @@ export function resolveArtistryConfigFromStore(store: any): ResolvedArtistryConf
       nanobananaApiKey: unwrap(store.nanobananaApiKey),
       nanobananaModel: unwrap(store.nanobananaModel),
       nanobananaResolution: unwrap(store.nanobananaResolution),
+      novelaiApiKey: unwrap(store.novelaiApiKey),
+      novelaiBaseUrl: unwrap(store.novelaiBaseUrl),
+      novelaiModel: unwrap(store.novelaiModel),
+      novelaiPromptPrefix: unwrap(store.novelaiPromptPrefix),
+      novelaiNegativePrompt: unwrap(store.novelaiNegativePrompt),
     },
   }
 }

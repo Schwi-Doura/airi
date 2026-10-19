@@ -92,12 +92,17 @@ onMounted(() => {
 
   // Initialize voice settings
   initializeVoiceSettings()
-
-  // Load voices if provider is configured
-  if (providersStore.configuredProviders[props.providerId]) {
-    speechStore.loadVoicesForProvider(props.providerId)
-  }
 })
+
+// Credential validation can finish after mounting; load voices when it becomes ready.
+watch(
+  [() => props.providerId, () => providersStore.configuredProviders[props.providerId]],
+  ([providerId, configured]) => {
+    if (configured)
+      void speechStore.loadVoicesForProvider(providerId)
+  },
+  { immediate: true },
+)
 
 const debouncedUpdate = useDebounceFn(() => {
   providers.value[props.providerId] = {

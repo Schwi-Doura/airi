@@ -222,6 +222,14 @@ export const useSpeechStore = defineStore('speech', () => {
         ...availableVoices.value,
         [provider]: voices,
       }
+      // NovelAI uses seeds rather than a remote voice catalogue. Complete a new
+      // selection with its configured custom seed, retaining any valid chosen seed.
+      if (provider === 'novelai-speech' && activeSpeechProvider.value === provider
+        && !voices.some(voice => voice.id === activeSpeechVoiceId.value)) {
+        const voice = voices.find(voice => voice.id === 'custom')
+        activeSpeechVoiceId.value = voice?.id ?? ''
+        activeSpeechVoice.value = voice
+      }
       return voices
     }
     catch (error) {
@@ -274,6 +282,15 @@ export const useSpeechStore = defineStore('speech', () => {
 
   function ensureActiveSpeechModel() {
     ensureStreamingDefaultModel()
+
+    if (activeSpeechProvider.value === 'novelai-speech') {
+      if (!['v1', 'v2'].includes(activeSpeechModel.value)) {
+        const config = providersStore.getProviderConfig('novelai-speech')
+        activeSpeechModel.value = config?.model === 'v1' ? 'v1' : 'v2'
+        clearVoiceSelection()
+      }
+      return
+    }
 
     if (activeSpeechProvider.value !== OFFICIAL_SPEECH_PROVIDER_ID)
       return

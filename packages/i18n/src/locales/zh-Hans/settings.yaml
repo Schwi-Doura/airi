@@ -1153,6 +1153,25 @@ pages:
             nano_banana_2: Nano Banana 2 (Gemini 3.1 Flash Image)
             nano_banana_pro: Nano Banana Pro (Gemini 3 Pro Image)
             nano_banana: Nano Banana (Gemini 2.5 Flash Image)
+      novelai:
+        title: NovelAI
+        description: 使用 NovelAI 永久 API 令牌生成文本。仅支持文本聊天，不支持工具调用。
+        token: 永久 API 令牌（Persistent API Token）
+        image-description: NovelAI Diffusion 文生图（桌面端）。
+        image-model-description: 选择绘图模型。Full 题材覆盖更广，Curated 使用更精选的数据集；实际可用性以 NovelAI 账号为准。
+        custom-model: 自定义模型
+        custom-model-id: 自定义模型 ID
+        positive-prompt: 正面提示词（前缀）
+        positive-prompt-description: 每次 NovelAI 绘图请求都会将此内容拼接到绘图描述前，以逗号分隔。留空则不追加。
+        negative-prompt: 负面提示词
+        negative-prompt-description: 应用于每次 NovelAI 绘图请求，并与单次请求的负面提示词合并。留空则不追加。
+      novelai-speech:
+        title: NovelAI 语音合成
+        description: 支持 TTS v1/v2、声音种子及种子混合，不支持音色克隆。
+        model: 模型
+        seed: 自定义声音种子
+        seed-description: 在声音列表中选择 custom 使用此种子；TTS v2 还支持 seedmix 混合语法。
+        invalid-config: 请填写永久 API 令牌、有效的接口地址及非空声音种子。
       deepseek:
         description: DeepSeek.com
         title: 深度求索 DeepSeek

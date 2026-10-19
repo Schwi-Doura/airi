@@ -1206,6 +1206,25 @@ pages:
             nano_banana_2: Nano Banana 2 (Gemini 3.1 Flash Image)
             nano_banana_pro: Nano Banana Pro (Gemini 3 Pro Image)
             nano_banana: Nano Banana (Gemini 2.5 Flash Image)
+      novelai:
+        title: NovelAI
+        description: Text generation with a NovelAI Persistent API Token. Text chat only; tool calling is unavailable.
+        token: Persistent API Token
+        image-description: NovelAI Diffusion text-to-image generation (desktop).
+        image-model-description: Choose a drawing model. Full covers a wider range of subjects; Curated uses a more focused dataset. Availability depends on your NovelAI account.
+        custom-model: Custom model
+        custom-model-id: Custom model ID
+        positive-prompt: Positive prompt prefix
+        positive-prompt-description: Added before every NovelAI image prompt, separated by a comma. Leave blank to add nothing.
+        negative-prompt: Negative prompt
+        negative-prompt-description: Applied to every NovelAI image request and combined with any request-specific negative prompt. Leave blank to add nothing.
+      novelai-speech:
+        title: NovelAI TTS
+        description: TTS v1/v2 with voice seeds and seed mixing. Voice cloning is unavailable.
+        model: Model
+        seed: Custom voice seed
+        seed-description: Select custom in the voice list to use this seed. TTS v2 also accepts seedmix syntax.
+        invalid-config: Enter a Persistent API Token, a valid base URL, and a non-empty voice seed.
       deepseek:
         description: deepseek.com
         title: DeepSeek

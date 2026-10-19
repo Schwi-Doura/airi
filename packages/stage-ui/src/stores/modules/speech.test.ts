@@ -17,6 +17,45 @@ describe('speech store helpers', () => {
     setActivePinia(createPinia())
   })
 
+  /** @example it('initializes a complete NovelAI speech selection', async () => {}) */
+  it('initializes a complete NovelAI speech selection', async () => {
+    // ROOT CAUSE:
+    // Selecting NovelAI previously left the model and voice empty; the module
+    // readiness indicator requires all three selections, so it stayed inactive.
+    const providersStore = useProvidersStore()
+    providersStore.providers['novelai-speech'] = { apiKey: 'test-token', baseUrl: 'https://api.novelai.net/', seed: 'Maria', model: 'v2' }
+    providersStore.forceProviderConfigured('novelai-speech')
+    const store = useSpeechStore()
+    store.activeSpeechProvider = 'novelai-speech'
+    store.activeSpeechModel = ''
+    store.activeSpeechVoiceId = ''
+    store.ensureActiveSpeechModel()
+    await store.loadVoicesForProvider('novelai-speech')
+    // @example expect(store.activeSpeechModel).toBe('v2')
+    expect(store.activeSpeechModel).toBe('v2')
+    // @example expect(store.activeSpeechVoiceId).toBe('custom')
+    expect(store.activeSpeechVoiceId).toBe('custom')
+    // @example expect(store.configured).toBe(true)
+    expect(store.configured).toBe(true)
+  })
+
+  /** @example it('keeps a saved NovelAI model and voice when loading voices again', async () => {}) */
+  it('keeps a saved NovelAI model and voice when loading voices again', async () => {
+    const providersStore = useProvidersStore()
+    providersStore.providers['novelai-speech'] = { apiKey: 'test-token', seed: 'Maria', model: 'v2' }
+    providersStore.forceProviderConfigured('novelai-speech')
+    const store = useSpeechStore()
+    store.activeSpeechProvider = 'novelai-speech'
+    store.activeSpeechModel = 'v1'
+    store.activeSpeechVoiceId = 'Clio'
+    store.ensureActiveSpeechModel()
+    await store.loadVoicesForProvider('novelai-speech')
+    // @example expect(store.activeSpeechModel).toBe('v1')
+    expect(store.activeSpeechModel).toBe('v1')
+    // @example expect(store.activeSpeechVoiceId).toBe('Clio')
+    expect(store.activeSpeechVoiceId).toBe('Clio')
+  })
+
   it('formats positive percentages with a plus sign', () => {
     expect(toSignedPercent(25)).toBe('+25%')
   })

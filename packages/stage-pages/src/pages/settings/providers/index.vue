@@ -103,6 +103,19 @@ const allArtistryProvidersMetadata = computed<ProviderSourceCard[]>((): Provider
             deployment: 'cloud',
             iconImage: undefined,
           },
+          {
+            id: 'novelai',
+            category: 'artistry',
+            icon: 'i-solar:gallery-bold-duotone',
+            name: 'NovelAI Diffusion',
+            localizedName: 'NovelAI Diffusion',
+            description: t('settings.pages.providers.provider.novelai.image-description'),
+            localizedDescription: t('settings.pages.providers.provider.novelai.image-description'),
+            configured: !!artistryStore.novelaiApiKey.trim(),
+            to: '/settings/providers/artistry/novelai',
+            pricing: 'paid',
+            deployment: 'cloud',
+          },
         ] satisfies ProviderSourceCard[])),
   ]
 })
