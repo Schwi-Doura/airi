@@ -6,6 +6,47 @@ import { createChatProvider } from './chat'
 
 /** @example describe('novelai completion decoding', () => {}) */
 describe('novelai completion decoding', () => {
+  it.each([
+    { escaped: false, suffix: '' },
+    { escaped: false, suffix: '\nThe image is already finished.' },
+    { escaped: true, suffix: '\nThe image is already finished.' },
+  ])('translates a tool envelope: %j', async ({ escaped, suffix }) => {
+    const prefix = 'I will prepare a canvas.\n'
+    const prompt = 'a cat with a "}" sign and a \\ path'
+    const envelope = JSON.stringify({ name: 'stage_widgets', arguments: { prompt } })
+    const encoded = escaped ? JSON.stringify(envelope).slice(1, -1) : envelope
+    const provider = createChatProvider({
+      apiKey: 'test',
+      baseUrl: 'https://text.novelai.net/oa/v1/',
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json({ choices: [{ index: 0, text: `${prefix}${encoded}${suffix}`, finish_reason: 'stop' }] })),
+    })
+    const response = await provider.chat('glm-4-6').fetch!(new URL('https://text.novelai.net/oa/v1/chat/completions'), {
+      body: JSON.stringify({ model: 'glm-4-6', messages: [{ role: 'user', content: 'Draw a cat' }], tools: [{ type: 'function', function: { name: 'stage_widgets', parameters: { type: 'object' } } }] }),
+    })
+    const result = await response.json()
+    expect(result.choices[0].finish_reason).toBe('tool_calls')
+    expect(result.choices[0].message.content).toBe(prefix)
+    expect(result.choices[0].message.tool_calls[0].function).toEqual({ name: 'stage_widgets', arguments: JSON.stringify({ prompt }) })
+  })
+
+  it.each([
+    'Example:\n```json\n{"name":"stage_widgets","arguments":{}}\n```',
+    'Example: {"name":"stage_widgets","arguments":{}}',
+    'Example:\n{"component":"artistry","status":"done"}',
+  ])('preserves JSON examples as text: %s', async (text) => {
+    const provider = createChatProvider({
+      apiKey: 'test',
+      baseUrl: 'https://text.novelai.net/oa/v1/',
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(Response.json({ choices: [{ index: 0, text, finish_reason: 'stop' }] })),
+    })
+    const response = await provider.chat('glm-4-6').fetch!(new URL('https://text.novelai.net/oa/v1/chat/completions'), {
+      body: JSON.stringify({ model: 'glm-4-6', messages: [{ role: 'user', content: 'Show an example' }], tools: [{ type: 'function', function: { name: 'stage_widgets', parameters: { type: 'object' } } }] }),
+    })
+    const result = await response.json()
+    expect(result.choices[0].message.content).toBe(text)
+    expect(result.choices[0].message.tool_calls).toBeUndefined()
+  })
+
   /** @example it('leaves an ordinary widget JSON example as chat text', async () => {}) */
   it('leaves an ordinary widget JSON example as chat text', async () => {
     const text = '{"component":"artistry","status":"done"}'
@@ -25,8 +66,9 @@ describe('novelai completion decoding', () => {
   })
 
   /** @example it('keeps tool-shaped text inert when tool choice is none', async () => {}) */
-  it('keeps tool-shaped text inert when tool choice is none', async () => {
-    const text = '{"name":"stage_widgets","arguments":{}}'
+  it.each([false, true])('keeps tool-shaped text inert when tool choice is none, escaped: %j', async (escaped) => {
+    const envelope = '{"name":"stage_widgets","arguments":{}}'
+    const text = escaped ? JSON.stringify(envelope).slice(1, -1) : envelope
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ choices: [{ index: 0, text, finish_reason: 'stop' }] }))
     const provider = createChatProvider({ apiKey: 'test', baseUrl: 'https://text.novelai.net/oa/v1/', fetch: fetcher })
     const response = await provider.chat('glm-4-6').fetch!(new URL('https://text.novelai.net/oa/v1/chat/completions'), {

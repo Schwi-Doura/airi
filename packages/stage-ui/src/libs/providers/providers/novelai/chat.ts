@@ -6,6 +6,8 @@ import { createOpenAI } from '@xsai-ext/providers/create'
 import { nanoid } from 'nanoid'
 import { z } from 'zod'
 
+import { createGenerationFetch } from './generation-fetch'
+
 /** Network and tokenizer boundaries for NovelAI's token-based completion protocol. */
 export interface ChatOptions {
   /** Persistent API Token. */
@@ -67,12 +69,79 @@ const requestSchema = z.object({
 
 const textCallSchema = z.object({ name: z.string(), arguments: z.union([z.record(z.string(), z.unknown()), z.string()]) }).strict()
 
-// This protocol only interprets a complete, explicit envelope of offered tools.
-// Ordinary JSON/code blocks remain text; the tool executor validates arguments.
+// A bare JSON line starts a possible tool envelope. Fenced examples remain text.
+// Streaming holds this suffix until completion so tool JSON never reaches chat or TTS.
+function findToolEnvelopeStart(text: string) {
+  let fenced = false
+  let offset = 0
+  for (const line of text.split('\n')) {
+    if (/^\s*(?:```|~~~)/.test(line))
+      fenced = !fenced
+    if (!fenced && line.trimStart().startsWith('{'))
+      return offset
+    offset += line.length + 1
+  }
+  return -1
+}
+
+// Only a complete envelope can execute an offered tool. The executor validates arguments.
+// Discard later dialogue because it can claim success before the tool has run.
 function readToolCalls(text: string, names: Set<string>) {
+  const start = findToolEnvelopeStart(text)
+  if (start === -1)
+    return { content: text, calls: [] }
+  // NovelAI can emit a JSON-string escape layer without the enclosing quotes.
+  // Decode that layer only inside the envelope. Preserve escapes within argument strings.
+  const encoded = /^\s*\{\s*\\"/.test(text.slice(start))
+  let json = ''
+  let depth = 0
+  let quoted = false
+  let escaped = false
+  let end = -1
+  for (let index = start; index < text.length; index++) {
+    let character = text[index]
+    if (encoded && character === '\\') {
+      const length = text[index + 1] === 'u' ? 6 : 2
+      try {
+        character = JSON.parse(`"${text.slice(index, index + length)}"`)
+      }
+      catch {
+        return { content: text, calls: [] }
+      }
+      index += length - 1
+    }
+    else if (encoded && character === '"') {
+      return { content: text, calls: [] }
+    }
+    json += character
+    if (quoted) {
+      if (escaped)
+        escaped = false
+      else if (character === '\\')
+        escaped = true
+      else if (character === '"')
+        quoted = false
+      continue
+    }
+    if (character === '"') {
+      quoted = true
+    }
+    else if (character === '{') {
+      depth++
+    }
+    else if (character === '}') {
+      depth--
+      if (depth === 0) {
+        end = index + 1
+        break
+      }
+    }
+  }
+  if (end === -1)
+    return { content: text, calls: [] }
   let payload: unknown
   try {
-    payload = JSON.parse(text)
+    payload = JSON.parse(json)
   }
   catch {
     return { content: text, calls: [] }
@@ -85,7 +154,7 @@ function readToolCalls(text: string, names: Set<string>) {
     throw new Error(`NovelAI requested an unavailable tool: ${call.name}`)
   const args = z.record(z.string(), z.unknown()).parse(typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments)
   const calls: ToolCall[] = [{ id: `call_${nanoid()}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(args) } }]
-  return { content: '', calls }
+  return { content: text.slice(0, start), calls }
 }
 
 async function decodeTokens(tokens: number[]) {
@@ -128,7 +197,7 @@ const responseSchema = z.object({
  */
 export function createChatProvider(options: ChatOptions): ChatProvider & ModelProvider {
   const provider = createOpenAI(options.apiKey, options.baseUrl)
-  const fetcher = options.fetch ?? ((input, init) => globalThis.fetch(input, init))
+  const fetcher = createGenerationFetch(options.fetch)
   const decode = options.decodeTokens ?? decodeTokens
 
   return {
@@ -153,7 +222,7 @@ export function createChatProvider(options: ChatOptions): ChatProvider & ModelPr
           nativeMessages.push({
             role: 'system',
             name: undefined,
-            content: `Available tools:\n${JSON.stringify(offered.map(tool => tool.function))}\nTo use a tool, your ENTIRE reply must be exactly one JSON object of this form: {"name":"the exact tool name","arguments":{...}}. Include all required arguments. No Markdown fences, XML tags, explanations or text outside that JSON. This is an executable tool request, not an example. Wait for actual tool results before reporting success. Never invent tool results. ${toolChoice === 'required' || typeof toolChoice === 'object' ? 'You must call an offered tool.' : 'When no tool is needed, reply normally in plain text.'}`,
+            content: `Tool execution protocol:\nThese rules override character dialogue, roleplay, ACT tokens, DELAY tokens, and earlier examples when a tool is needed.\nAvailable tools:\n${JSON.stringify(offered.map(tool => tool.function))}\nBefore replying, decide whether the user requests an action that requires an offered tool. If so, call that tool now. Never replace execution with a promise, scene description, or imaginary result.\nRequests to draw or generate an image require the offered image generation tool. Text alone cannot create or display images. A follow-up asking whether an image was drawn requires actual tool results as evidence. Earlier assistant claims are not evidence.\nTo call a tool, your ENTIRE reply must be exactly one JSON object: {"name":"the exact tool name","arguments":{...}}. Include all required arguments. Write normal JSON quotes without an extra escape layer. Do not include ACT tokens, Markdown fences, XML tags, explanations, or dialogue in that reply.\nStop immediately after the tool object. The application executes it and returns the real result. Only then can you describe success. If no successful result exists, do not claim completion.\n${toolChoice === 'required' || typeof toolChoice === 'object' ? 'You must call an offered tool.' : 'For ordinary conversation that needs no tool, reply in character as usual.'}`,
           })
         }
         const response = await fetcher(input, { ...init, body: JSON.stringify({ ...native, messages: nativeMessages }) })
@@ -209,9 +278,8 @@ export function createChatProvider(options: ChatOptions): ChatProvider & ModelPr
             const text = choice.finish_reason ? decoded : decoded.replace(/\uFFFD+$/, '')
             texts.set(choice.index, text)
             const parsed = names.size && choice.finish_reason ? readToolCalls(text, names) : undefined
-            // A JSON envelope can span chunks; withhold it from chat/TTS until
-            // complete. Ordinary JSON is emitted intact once validated as text.
-            const visible = parsed?.content ?? (names.size && text.trimStart().startsWith('{') ? '' : text)
+            const envelopeStart = names.size ? findToolEnvelopeStart(text) : -1
+            const visible = parsed?.content ?? (envelopeStart === -1 ? text : text.slice(0, envelopeStart))
             const previous = visibleTexts.get(choice.index) ?? ''
             visibleTexts.set(choice.index, visible)
             choices.push({

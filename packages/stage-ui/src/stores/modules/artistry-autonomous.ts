@@ -165,13 +165,6 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
 
       const chatProvider = await providersStore.getChatProviderInstance(providerId)
 
-      // NOTICE: Artificial 10s delay for USER target to avoid race conditions/429s.
-      // Skipped for ASSISTANT target as the main response is already finalized.
-      if (target === 'user') {
-        artistLog('User target detected. Applying 10s safety delay...')
-        await new Promise(resolve => setTimeout(resolve, 10000))
-      }
-
       // 2. Call LLM (Non-streaming for structured data)
       // Bypasses the chat orchestrator's llm_request_* funnel — emit a
       // dedicated event so Director LLM cost is separable from chat.

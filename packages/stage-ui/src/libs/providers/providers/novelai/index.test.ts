@@ -12,6 +12,42 @@ afterEach(() => vi.restoreAllMocks())
 
 /** @example describe('NovelAI adapters', () => {}) */
 describe('novelai adapters', () => {
+  it.each([
+    { escaped: false, suffix: '' },
+    { escaped: false, suffix: '\nThe image is already finished.' },
+    { escaped: true, suffix: '\nThe image is already finished.' },
+  ])('executes streamed drawing requests: %j', async ({ escaped, suffix }) => {
+    // ROOT CAUSE:
+    // NovelAI emitted dialogue around tool JSON and sometimes escaped its quotes as a JSON string.
+    // Decode the complete envelope and withhold later text until the tool returns its actual result.
+    const execute = vi.fn(() => 'Image created.')
+    const tool = rawTool({
+      name: 'image_journal',
+      parameters: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'], additionalProperties: false },
+      execute,
+    })
+    const fetcher = vi.spyOn(globalThis, 'fetch')
+    const envelope = JSON.stringify({ name: 'image_journal', arguments: { prompt: 'cat' } })
+    const encoded = escaped ? JSON.stringify(envelope).slice(1, -1) : envelope
+    for (const chunks of [
+      ['I will draw a cat.\n', ...encoded.split(''), suffix],
+      ['Here is your picture.'],
+    ]) {
+      const events = chunks.map((text, index) => `data: ${JSON.stringify({ choices: [{ index: 0, text, finish_reason: index === chunks.length - 1 ? 'stop' : null }] })}\n\n`).join('')
+      fetcher.mockResolvedValueOnce(new Response(`${events}data: [DONE]\n\n`))
+    }
+    const provider = providerNovelAI.createProvider({ apiKey: 'token', baseUrl: 'https://text.novelai.net/oa/v1/' })
+    if (!('chat' in provider))
+      throw new Error('Expected a chat provider')
+    const result = streamText({ ...provider.chat('glm-4-6'), messages: [{ role: 'user', content: 'Draw a cat.' }], tools: [tool], stopWhen: stepCountAtLeast(2) })
+    let text = ''
+    for await (const delta of result.textStream)
+      text += delta
+    expect(execute).toHaveBeenCalledWith({ prompt: 'cat' }, expect.objectContaining({ toolCallId: expect.any(String) }))
+    expect(text).toBe('I will draw a cat.\nHere is your picture.')
+    expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body)).messages).toContainEqual(expect.objectContaining({ role: 'user', content: expect.stringContaining('Image created.') }))
+  })
+
   /** @example it('executes a streamed artistry tool request and sends its result back', async () => {}) */
   it('executes a streamed artistry tool request and sends its result back', async () => {
     // ROOT CAUSE:
@@ -174,4 +210,37 @@ describe('novelai adapters', () => {
     // @example expect(models.length).toBeGreaterThan(0)
     expect(models.length).toBeGreaterThan(0)
   })
+
+  it.skipIf(!process.env.NOVELAI_API_TOKEN)('executes a live image request despite earlier roleplay claims', async () => {
+    // ROOT CAUSE:
+    // Character dialogue promised images without executing a tool. The tool protocol must take priority over roleplay.
+    const execute = vi.fn(() => JSON.stringify({ entryId: 'verification-image', message: 'Image created in inline mode.' }))
+    const imageTool = rawTool({
+      name: 'image_journal',
+      description: 'Generate and display an image. Use action create and describe the image in prompt.',
+      parameters: {
+        type: 'object',
+        properties: { action: { type: 'string', enum: ['create'] }, prompt: { type: 'string' } },
+        required: ['action', 'prompt'],
+        additionalProperties: false,
+      },
+      execute,
+    })
+    const provider = providerNovelAI.createProvider({ apiKey: process.env.NOVELAI_API_TOKEN || '', baseUrl: 'https://text.novelai.net/oa/v1/' })
+    if (!('chat' in provider))
+      throw new Error('Expected a chat provider')
+    await generateText({
+      ...provider.chat('glm-4-6'),
+      messages: [
+        { role: 'system', content: 'Reply as a cheerful character. Start every reply with <|ACT {"emotion":"happy"}|>.' },
+        { role: 'user', content: '帮我画一张星空的图片' },
+        { role: 'assistant', content: '画好了！星空特别漂亮！' },
+        { role: 'user', content: '帮我画一张大海的图片' },
+      ],
+      tools: [imageTool],
+      stopWhen: stepCountAtLeast(2),
+    })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ action: 'create', prompt: expect.any(String) }), expect.objectContaining({ toolCallId: expect.any(String) }))
+  }, 90_000)
 })
