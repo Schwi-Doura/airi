@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
 
 import { useAnalytics } from './use-analytics'
 
@@ -20,12 +19,6 @@ vi.mock('@proj-airi/stage-shared', () => ({
       : 'web',
   isStageCapacitor: analyticsMocks.isStageCapacitorMock,
   isStageTamagotchi: analyticsMocks.isStageTamagotchiMock,
-}))
-
-vi.mock('vue-i18n', () => ({
-  useI18n: () => ({
-    locale: ref('en'),
-  }),
 }))
 
 vi.mock('../libs/product-signals', () => ({
@@ -57,6 +50,10 @@ vi.mock('../stores/settings/general', () => ({
 }))
 
 describe('useAnalytics conversation product events', () => {
+  it('can be created by an asynchronous background drawing task outside setup', async () => {
+    await Promise.resolve()
+    expect(() => useAnalytics()).not.toThrow()
+  })
   beforeEach(() => {
     analyticsMocks.captureMock.mockClear()
     analyticsMocks.recordFirstMessageMock.mockClear()

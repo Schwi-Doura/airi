@@ -3,7 +3,6 @@ import type { SpeechOutputStopReason } from '../stores/speech-output-control'
 
 import { isStageCapacitor, isStageTamagotchi } from '@proj-airi/stage-shared'
 import { computed } from 'vue'
-import { useI18n } from 'vue-i18n'
 
 import { captureAnalyticsEvent, enableAnalytics, getAnalytics, getAnalyticsPrivacyPolicyUrl, isAnalyticsAvailableInBuild } from '../libs/product-signals'
 import { captureTrackButtonEvent } from '../libs/product-signals/events/interaction'
@@ -115,9 +114,9 @@ export function useAnalytics() {
   const analytics = getAnalytics()
   const settingsAnalytics = useSettingsAnalytics()
   const settingsGeneral = useSettingsGeneral()
-  const { locale } = useI18n()
-
-  const privacyPolicyUrl = computed(() => getAnalyticsPrivacyPolicyUrl(locale.value || settingsGeneral.language))
+  // Background actions also capture analytics after setup has ended. The saved
+  // language is the shared source for policy links and needs no component context.
+  const privacyPolicyUrl = computed(() => getAnalyticsPrivacyPolicyUrl(settingsGeneral.language))
 
   const isAnalyticsEnabled = computed(() => isAnalyticsAvailableInBuild() && settingsAnalytics.analyticsEnabled)
 
