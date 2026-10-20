@@ -31,6 +31,49 @@ export function toSpeechText(markdown: string, options?: SpeechTextOptions): str
   return String(unified().use(remarkParse).use(remarkSpeech, options).processSync(markdown))
 }
 
+/** Finds a source prefix ending a spoken sentence. Unclosed inline markup and code remain buffered until they become stable. */
+export function findSpeechCommit(markdown: string, marker: string): number {
+  const tree = unified().use(remarkParse).parse(markdown)
+  let committed = 0
+  let unstable = false
+  function visit(node: Nodes) {
+    const start = node.position?.start.offset
+    const end = node.position?.end.offset
+    if (unstable || start === undefined || end === undefined || node.type === 'code' || node.type === 'html')
+      return
+    if (node.type === 'text') {
+      const source = markdown.slice(start, end)
+      for (let index = 0; index < source.length; index++) {
+        const character = source[index]
+        if (source[index - 1] === '\\')
+          continue
+        // Unparsed delimiters can become markup when a later token closes them.
+        // Keep that suffix instead of reading partial links, URLs, or emphasis aloud.
+        if (/[`*_[<]/u.test(character) && (!asciiOperand.test(source[index - 1] ?? '') || !asciiOperand.test(source[index + 1] ?? ''))) {
+          unstable = true
+          break
+        }
+        if (!/[。！？!?.\n\r]/u.test(character))
+          continue
+        if (character === '.' && /\d/u.test(source[index - 1] ?? '') && (!source[index + 1] || /\d/u.test(source[index + 1])))
+          continue
+        committed = start + index + 1
+      }
+      return
+    }
+    if (['strong', 'emphasis', 'delete', 'inlineCode', 'link', 'linkReference', 'image', 'imageReference'].includes(node.type)) {
+      const spoken = toSpeechText(markdown.slice(start, end), { marker }).replaceAll(marker, '').trimEnd()
+      if (/[。！？!?.]$/u.test(spoken))
+        committed = end
+      return
+    }
+    if ('children' in node)
+      node.children.forEach(visit)
+  }
+  tree.children.forEach(visit)
+  return committed
+}
+
 function compile(tree: Root, source: string, marker: string | undefined): string {
   // TODO: Read literal symbols as words, for example `*` as "times" and `~=` as "approximately equals".
   // This needs a spoken lexicon for each language. Its place, packages/i18n or a separate table, is not decided.

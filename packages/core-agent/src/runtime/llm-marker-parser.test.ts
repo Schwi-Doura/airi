@@ -7,6 +7,26 @@ import { useLlmmarkerParser } from './llm-marker-parser'
  * const parser = useLlmmarkerParser({ onLiteral, onSpecial })
  */
 describe('useLlmmarkerParser', () => {
+  it('delivers a completed sentence immediately while retaining only incomplete marker prefixes', async () => {
+    const literals: string[] = []
+    const specials: string[] = []
+    const parser = useLlmmarkerParser({
+      onLiteral: (value) => { literals.push(value) },
+      onSpecial: (value) => { specials.push(value) },
+    })
+    await parser.consume('こんにちは。')
+    await expect.poll(() => literals.join('')).toBe('こんにちは。')
+    await parser.consume('次の文。<')
+    await expect.poll(() => literals.join('')).toBe('こんにちは。次の文。')
+    await parser.consume('|ACT happy|>その後。')
+    await expect.poll(() => literals.join('')).toBe('こんにちは。次の文。その後。')
+    await expect.poll(() => specials).toEqual(['<|ACT happy|>'])
+    await parser.consume('<{\'|')
+    await parser.consume('\'}ACT sad{\'|\'}>最後。')
+    await expect.poll(() => literals.join('')).toBe('こんにちは。次の文。その後。最後。')
+    await expect.poll(() => specials).toEqual(['<|ACT happy|>', '<|ACT sad|>'])
+    await parser.end()
+  })
   /**
    * @example
    * Plain model text is emitted as literal output.

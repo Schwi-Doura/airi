@@ -1,5 +1,4 @@
 import type { AudioPlayback, IntentHandle, PcmBlock, PlaybackGroup, PlaybackItem, PlaybackReceipt, SpeechPipelineEvents, SpeechPipelineOptions } from '@proj-airi/pipelines-audio'
-
 import type { Outcome } from '@proj-airi/stream-kit'
 
 import type { TurnRef } from '../turn'
@@ -9,7 +8,7 @@ import { createPushStream } from '@proj-airi/stream-kit'
 import { nanoid } from 'nanoid/non-secure'
 
 import { errorFromCause, errorMessageFromValue } from '../../utils/error'
-import { toSpeechText } from './speech-text'
+import { findSpeechCommit, toSpeechText } from './speech-text'
 
 /** Each synthesized part carries optional display text. Audio ownership transfers to playback. */
 export interface SpeechAudio {
@@ -38,6 +37,12 @@ export interface SpeechClipEnd {
 /** Provider settings are selected once when a response opens. */
 export type SpeechOutput = {
   readonly playback: AudioPlayback
+  /** Sentence delivery commits stable Markdown as it arrives. Omission buffers the complete producer text until end. */
+  readonly textDelivery?: 'sentence'
+  /** Limits synthesis concurrency without waiting for earlier audio playback. The pipeline default applies when omitted. */
+  readonly ttsMaxConcurrent?: SpeechPipelineOptions<Blob>['ttsMaxConcurrent']
+  /** Optional provider segmentation. The response abort signal also cancels language annotation. */
+  readonly segmenter?: (...args: [...Parameters<NonNullable<SpeechPipelineOptions<Blob>['segmenter']>>, signal: AbortSignal]) => ReturnType<NonNullable<SpeechPipelineOptions<Blob>['segmenter']>>
   readonly onSpecial?: (special: string) => void
   /** Runs when the first audio of a clip is scheduled. */
   readonly onPlaybackStart?: (clip: SpeechClip) => void
@@ -75,7 +80,7 @@ export class SpeechStream {
   private settled = false
 
   private timer: ReturnType<typeof setTimeout> | undefined
-  /** Markdown that `end()` converts to speech text. A control marker holds the place of each entry in `controls`. */
+  /** Uncommitted Markdown. Each marker preserves one control's position until its prefix is delivered. */
   private markdown = ''
   private readonly controls: SpeechControl[] = []
   readonly signal = this.abort.signal
@@ -117,6 +122,31 @@ export class SpeechStream {
     const pending = new Set<PlaybackItem<Blob>>()
 
     const pipeline = createSpeechPipeline<Blob>({
+      ttsMaxConcurrent: output.ttsMaxConcurrent,
+      segmenter: output.segmenter
+        ? (tokens, meta) => {
+            const reader = output.segmenter!(tokens, meta, AbortSignal.any([this.signal, response.signal])).getReader()
+            return new ReadableStream({
+              pull: async (stream) => {
+                try {
+                  const result = await reader.read()
+                  if (result.done) {
+                    reader.releaseLock()
+                    stream.close()
+                  }
+                  else {
+                    stream.enqueue(result.value)
+                  }
+                }
+                catch (cause) {
+                  this.fail(errorFromCause(cause, 'Speech language segmentation failed'))
+                  stream.error(cause)
+                }
+              },
+              cancel: reason => reader.cancel(reason),
+            })
+          }
+        : undefined,
       tts: async (request, signal) => {
         try {
           const audio = await output.synthesize(request, AbortSignal.any([signal, this.signal, response.signal]))
@@ -133,38 +163,39 @@ export class SpeechStream {
           const clip = { id: item.segmentId, text: item.text }
           let started = false
           void Promise.race([previous, this.done])
-          .then(async () => {
-            if (this.signal.aborted || response.signal.aborted)
-              return 'stopped' as const
+            .then(async () => {
+              if (this.signal.aborted || response.signal.aborted)
+                return 'stopped' as const
 
-            return response.playback.enqueue({
-              id: item.id,
-              audio: item.audio,
-              signal: this.signal,
-              onStart: () => {
-                started = true
-                listeners.start.forEach(listener => listener({ item, startedAt: Date.now() }))
-                output.onPlaybackStart?.(clip)
-            } })
-          })
-          .then((result) => {
-            if (started)
-              output.onPlaybackEnd?.(clip, this.clipEnd(result))
+              return response.playback.enqueue({
+                id: item.id,
+                audio: item.audio,
+                signal: this.signal,
+                onStart: () => {
+                  started = true
+                  listeners.start.forEach(listener => listener({ item, startedAt: Date.now() }))
+                  output.onPlaybackStart?.(clip)
+                },
+              })
+            })
+            .then((result) => {
+              if (started)
+                output.onPlaybackEnd?.(clip, this.clipEnd(result))
 
-            if (!pending.delete(item))
-              return
+              if (!pending.delete(item))
+                return
 
-            if (result === 'ended')
-              listeners.end.forEach(listener => listener({ item, endedAt: Date.now() }))
-            else
-              listeners.interrupt.forEach(listener => listener({ item, interruptedAt: Date.now(), reason: result }))
+              if (result === 'ended')
+                listeners.end.forEach(listener => listener({ item, endedAt: Date.now() }))
+              else
+                listeners.interrupt.forEach(listener => listener({ item, interruptedAt: Date.now(), reason: result }))
 
-            // REVIEW: can we have more manage-able error handling
-            // across our pipelines?
-            if (result === 'failed')
-              this.fail(new Error('Speech playback failed'))
+              // REVIEW: can we have more manage-able error handling
+              // across our pipelines?
+              if (result === 'failed')
+                this.fail(new Error('Speech playback failed'))
             // REVIEW: must we do this here?
-          }, cause => this.fail(errorFromCause(cause, 'Speech playback failed')))
+            }, cause => this.fail(errorFromCause(cause, 'Speech playback failed')))
         },
         stopByIntent: (_id, reason) => {
           for (const item of pending)
@@ -249,12 +280,7 @@ export class SpeechStream {
     return signal.aborted ? { status, reason: errorMessageFromValue(signal.reason) } : { status }
   }
 
-  // REVIEW:
-  // Every purpose holds its text until `end()`, so markdown is converted with the full context.
-  // read-aloud already has the full text, but answer and notification start to speak only after the model ends.
-  // answer needs a streaming commit at clause boundaries. See the chunker punctuation in pipelines-audio.
-
-  /** Special tokens keep their position relative to the text. They are delivered when the producer ends. */
+  /** Special tokens keep their position relative to committed sentences and uncommitted Markdown. */
   special(value: string) {
     if (this.sealed || this.response.signal.aborted)
       return
@@ -276,6 +302,19 @@ export class SpeechStream {
       return { status: 'closed' }
 
     this.markdown += text.replaceAll(controlMarker, '')
+    if (this.output.textDelivery === 'sentence' && /[。！？!?.\n\r`*_\])>]/u.test(text)) {
+      const boundary = findSpeechCommit(this.markdown, controlMarker)
+      if (boundary > 0) {
+        this.deliver(boundary)
+        // NOTICE:
+        // Sentence and grapheme readers require lookahead after a terminal period.
+        // Without a delimiter, synthesis waits for the next model token.
+        // Source: pipelines-audio/processors/tts-chunker.ts and clustr.
+        // Remove this delimiter when sentence flushes bypass character lookahead.
+        this.intent?.writeLiteral(' ')
+        this.intent?.writeFlush()
+      }
+    }
     return { status: 'accepted' }
   }
 
@@ -291,20 +330,25 @@ export class SpeechStream {
   }
 
   /** Sends the speech text and the controls in source order. Controls that conversion lost are sent last, in order. */
-  private deliver() {
-    const parts = toSpeechText(this.markdown, { marker: controlMarker }).split(controlMarker)
+  private deliver(boundary = this.markdown.length) {
+    const markdown = this.markdown.slice(0, boundary)
+    this.markdown = this.markdown.slice(boundary)
+    const controls = this.controls.splice(0, markdown.split(controlMarker).length - 1)
+    const parts = toSpeechText(markdown, { marker: controlMarker }).split(controlMarker)
     parts.forEach((text, index) => {
       if (text)
         this.deliverText(text)
 
-      const control = this.controls[index]
+      const control = controls[index]
       if (control && index < parts.length - 1)
         this.deliverControl(control)
     })
-    this.controls.slice(parts.length - 1).forEach(control => this.deliverControl(control))
+    controls.slice(parts.length - 1).forEach(control => this.deliverControl(control))
   }
 
   private deliverText(text: string) {
+    if (this.output.textDelivery === 'sentence' && !/[\p{L}\p{N}]/u.test(text))
+      return
     if (this.text)
       this.text.write(text)
     else

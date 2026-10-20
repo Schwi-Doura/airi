@@ -20,6 +20,10 @@ export interface TextSegment {
   intentId: string
   segmentId: string
   text: string
+  /** Provider language code selected before synthesis; omitted for provider auto detection. */
+  language?: string
+  /** Expression and extra silence selected by the provider's sentence planner. */
+  style?: SpeechStyle
   special: string | null
   reason: 'boost' | 'limit' | 'hard' | 'flush' | 'special'
   createdAt: number
@@ -32,11 +36,25 @@ export interface TtsRequest {
   segmentId: string
   sequence: number
   text: string
+  /** Language of this span, copied from the segmenter rather than inferred from short chunks. */
+  language?: string
+  /** Copied unchanged from the provider's sentence plan. */
+  style?: SpeechStyle
   special: string | null
   /** Chunker boundary that produced this text. Tracing uses it to explain synthesis latency. */
   reason: TextSegment['reason']
   priority: number
   createdAt: number
+}
+
+/** Optional expression and timing decisions for one synthesized span. */
+export interface SpeechStyle {
+  /** Provider-specific emotion name. */
+  emotion?: string
+  /** Relative emotion strength from 0 to 1. */
+  intensity?: number
+  /** Additional silence after this span, in milliseconds. */
+  pauseAfterMs?: number
 }
 
 export interface TtsResult<TAudio> {

@@ -76,7 +76,6 @@ async function readStream<T>(stream: ReadableStream<T>, handler: (value: T) => P
 
 function createLlmMarkerParser(options?: MarkerParserOptions) {
   const minLiteralEmitLength = Math.max(1, options?.minLiteralEmitLength ?? 1)
-  const tailLength = Math.max(TAG_OPEN.length - 1, ESCAPED_TAG_OPEN.length - 1)
   let buffer = ''
   let inTag = false
 
@@ -91,9 +90,18 @@ function createLlmMarkerParser(options?: MarkerParserOptions) {
         if (!inTag) {
           const openTagIndex = buffer.indexOf(TAG_OPEN)
           if (openTagIndex < 0) {
+            // Only a suffix that can still become a marker needs another token.
+            let tailLength = 0
+            for (const opener of [TAG_OPEN, ESCAPED_TAG_OPEN]) {
+              for (let length = 1; length < opener.length; length++) {
+                if (buffer.endsWith(opener.slice(0, length)))
+                  tailLength = Math.max(tailLength, length)
+              }
+            }
             if (buffer.length - tailLength >= minLiteralEmitLength) {
-              const emit = buffer.slice(0, -tailLength)
-              buffer = buffer.slice(-tailLength)
+              const boundary = buffer.length - tailLength
+              const emit = buffer.slice(0, boundary)
+              buffer = buffer.slice(boundary)
               await onLiteral(emit)
             }
             break

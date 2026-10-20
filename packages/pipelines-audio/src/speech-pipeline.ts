@@ -284,6 +284,8 @@ export function createSpeechPipeline<TAudio>(options: SpeechPipelineOptions<TAud
           segmentId: value.segmentId,
           sequence: nextRequestSequence++,
           text: value.text,
+          language: value.language,
+          style: value.style,
           special: value.special,
           reason: value.reason,
           priority: intent.priority,

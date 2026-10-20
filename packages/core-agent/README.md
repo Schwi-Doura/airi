@@ -1,5 +1,13 @@
 # Core Agent
 
+`SpeechOutput.segmenter` can replace provider text segmentation. It receives the response abort signal, including during asynchronous language annotation.
+Segmenter errors fail the speech producer. They do not replace the displayed chat reply.
+
+`SpeechOutput.textDelivery: 'sentence'` commits completed speech sentences before the producer ends.
+Incomplete inline Markdown remains buffered. Fenced code and HTML remain unspoken. Controls keep their order across commits.
+`ttsMaxConcurrent` limits inference requests while earlier clips play. Omission uses the pipeline's existing concurrency limit.
+The LLM marker parser retains only an incomplete marker prefix, so ordinary sentence endings reach consumers immediately.
+
 `@proj-airi/core-agent` owns scheduling, context composition, tool rounds, and generation events. Stage applications provide persistence and UI through its ports. Provider registration and configuration belong to `provider-inference`. Authentication and Flux billing belong to the gateway.
 
 ## Conversation and protocol projection

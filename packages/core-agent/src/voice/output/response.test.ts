@@ -2,7 +2,7 @@ import type { TtsRequest } from '@proj-airi/pipelines-audio'
 
 import type { SpeechAudio, StreamingTranscriber, TranscriptionEvent } from '../../index'
 
-import { AudioInput, Playback } from '@proj-airi/pipelines-audio'
+import { AudioInput, createTtsSegmentStream, Playback } from '@proj-airi/pipelines-audio'
 import { createPushStream } from '@proj-airi/stream-kit'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -10,6 +10,133 @@ import { VoiceController } from '../../index'
 import { keepOpen, pcmSource } from '../../testing/audio'
 
 describe('voiceController output', () => {
+  it('starts sentence synthesis and playback before text input ends, while later sentences continue', async () => {
+    const firstAudio = Promise.withResolvers<Blob>()
+    const firstPlayback = Promise.withResolvers<{ throughMs: number }>()
+    const requested: string[] = []
+    const played: string[] = []
+    const playback = new Playback({ nowMs: () => 0, play: clip => ({
+      done: (async () => {
+        const text = await (clip.audio as Blob).text()
+        played.push(text)
+        return text === 'こんにちは。' ? firstPlayback.promise : { throughMs: 1 }
+      })(),
+      stop: async () => ({ throughMs: 0 }),
+    }) })
+    const controller = new VoiceController({ speech: () => ({ playback, textDelivery: 'sentence', ttsMaxConcurrent: 1, segmenter: (tokens, meta) => createTtsSegmentStream(tokens, meta, { boost: 0, maximumWords: Number.POSITIVE_INFINITY }), synthesize: async (request) => {
+      requested.push(request.text)
+      return request.text === 'こんにちは。' ? firstAudio.promise : new Blob([request.text])
+    } }) })
+    const response = controller.openResponse({ sessionId: 'alice', turnId: 'incremental' })
+    const speech = response.openSpeech({ purpose: 'answer' })
+    speech.write('こんにちは。')
+    await expect.poll(() => requested).toEqual(['こんにちは。'])
+    speech.write('今日はいい天気で、')
+    expect(requested).toEqual(['こんにちは。'])
+    speech.write('一緒にお茶を飲みませんか。')
+    expect(requested).toEqual(['こんにちは。'])
+    firstAudio.resolve(new Blob(['こんにちは。']))
+    await expect.poll(() => played).toEqual(['こんにちは。'])
+    await expect.poll(() => requested).toEqual(['こんにちは。', '今日はいい天気で、一緒にお茶を飲みませんか。'])
+    speech.write('まだ話しています')
+    firstPlayback.resolve({ throughMs: 1 })
+    speech.end()
+    expect(await response.finish()).toBe('finished')
+    expect(played.join('')).toBe('こんにちは。今日はいい天気で、一緒にお茶を飲みませんか。まだ話しています')
+    await controller.close()
+  })
+
+  it('holds incomplete Markdown and skips streamed code blocks before committing sentences', async () => {
+    const requested: string[] = []
+    const specials: string[] = []
+    const playback = new Playback({ nowMs: () => 0, play: () => ({ done: Promise.resolve({ throughMs: 1 }), stop: async () => ({ throughMs: 0 }) }) })
+    const controller = new VoiceController({ speech: () => ({ playback, textDelivery: 'sentence', onSpecial: special => specials.push(special), synthesize: async (request) => {
+      requested.push(request.text)
+      return new Blob([request.text])
+    } }) })
+    const response = controller.openResponse({ sessionId: 'alice', turnId: 'streamed-markdown' })
+    const speech = response.openSpeech({ purpose: 'answer' })
+    speech.write('**こんにちは。')
+    speech.special('<|ACT happy|>')
+    expect(requested).toEqual([])
+    speech.write('**\n\n```js\nsecret。')
+    await expect.poll(() => requested.join('')).toBe('こんにちは。')
+    speech.write('\nmore secret。\n```\n\nSee [the guide](https://example.')
+    speech.write('com).')
+    await expect.poll(() => requested.join('')).toBe('こんにちは。See the guide.')
+    speech.end()
+    expect(await response.finish()).toBe('finished')
+    expect(specials).toEqual(['<|ACT happy|>'])
+    await controller.close()
+  })
+
+  it('keeps decimals intact and stops queued streaming text after cancellation', async () => {
+    const requests: string[] = []
+    const pending = Promise.withResolvers<Blob>()
+    const playback = new Playback({ nowMs: () => 0, play: () => ({ done: Promise.resolve({ throughMs: 1 }), stop: async () => ({ throughMs: 0 }) }) })
+    const controller = new VoiceController({ speech: () => ({ playback, textDelivery: 'sentence', synthesize: async (request) => {
+      requests.push(request.text)
+      return pending.promise
+    } }) })
+    const response = controller.openResponse({ sessionId: 'alice', turnId: 'cancel-stream' })
+    const speech = response.openSpeech({ purpose: 'answer' })
+    speech.write('数値は3.')
+    expect(requests).toEqual([])
+    speech.write('14です。')
+    await expect.poll(() => requests).toEqual(['数値は3.14です。'])
+    speech.cancel('New input')
+    expect(speech.write('次の文。')).toEqual({ status: 'closed' })
+    pending.resolve(new Blob(['unused']))
+    await response.finish()
+    expect(requests).toEqual(['数値は3.14です。'])
+    await controller.close()
+  })
+
+  // ROOT CAUSE:
+  // The default chunker can cut Japanese into kanji-only clauses. A provider's
+  // language segmenter must reach the pipeline so those clauses keep their language.
+  it('uses provider language segments without cutting them into short clauses', async () => {
+    const requested: TtsRequest[] = []
+    const text = '今日はいい天気ですね、明日も一緒に公園へ行って、お花を見ましょう。'
+    const playback = new Playback({ nowMs: () => 0, play: () => ({ done: Promise.resolve({ throughMs: 1 }), stop: async () => ({ throughMs: 0 }) }) })
+    const controller = new VoiceController({ speech: () => ({
+      playback,
+      segmenter: () => new ReadableStream({ start(stream) {
+        stream.enqueue({ streamId: 'language', intentId: 'language', segmentId: 'ja', text, language: 'JA', special: null, reason: 'hard', createdAt: 0 })
+        stream.close()
+      } }),
+      synthesize: async (request) => {
+        requested.push(request)
+        return new Blob(['speech'])
+      },
+    }) })
+    const response = controller.openResponse({ sessionId: 'alice', turnId: 'languages' })
+    const speech = response.openSpeech({ purpose: 'answer' })
+    speech.write(text)
+    speech.end()
+    expect(await response.finish()).toBe('finished')
+    expect(requested.map(request => request.text)).toEqual([text])
+    expect(requested[0]).toHaveProperty('language', 'JA')
+    await controller.close()
+  })
+
+  it('fails speech when language annotation fails instead of reporting silent success', async () => {
+    const synthesize = vi.fn(async () => new Blob(['speech']))
+    const playback = new Playback({ nowMs: () => 0, play: () => ({ done: Promise.resolve({ throughMs: 1 }), stop: async () => ({ throughMs: 0 }) }) })
+    const controller = new VoiceController({ speech: () => ({ playback, synthesize, segmenter: () => new ReadableStream({
+      start(stream) { stream.error(new Error('Invalid language annotation')) },
+    }) }) })
+    const response = controller.openResponse({ sessionId: 'alice', turnId: 'bad-language' })
+    const speech = response.openSpeech({ purpose: 'answer' })
+    speech.write('你好。')
+    speech.end()
+    const outcome = await speech.done
+    expect(outcome.status).toBe('failed')
+    expect(synthesize).not.toHaveBeenCalled()
+    await response.finish()
+    await controller.close()
+  })
+
   it('ends the speaking indicator only after cancelled audio becomes silent', async () => {
     const silence = Promise.withResolvers<{ throughMs: number }>()
     const started = vi.fn()

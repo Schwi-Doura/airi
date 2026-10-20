@@ -8,6 +8,10 @@ Shared audio-pipeline orchestration for AIRI. The package owns input sharing, ca
 - Building and scheduling speech playback pipelines.
 - Parsing streaming-control events.
 
+Custom segmenters can set `TextSegment.language`. The pipeline copies this code to `TtsRequest.language` before synthesis.
+The optional `style` carries provider emotion, intensity, and extra pause decisions to synthesis without interpreting them in the scheduler.
+Playback keeps the source order even when synthesis requests finish out of order.
+
 ## Do not use it for
 
 - Vue or Electron lifecycle state.

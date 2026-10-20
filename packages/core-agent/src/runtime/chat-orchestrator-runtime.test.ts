@@ -607,8 +607,8 @@ describe('createChatOrchestratorRuntime', () => {
     expect(harness.sessionMessages['session-1']?.at(-1)).toMatchObject({
       role: 'assistant',
       interrupted: true,
-      content: 'partial ',
-      slices: [{ type: 'text', text: 'partial ' }],
+      content: 'partial reply',
+      slices: [{ type: 'text', text: 'partial reply' }],
       completedAt: failedAt,
     })
     expect(harness.assistantAppended).toHaveLength(0)
