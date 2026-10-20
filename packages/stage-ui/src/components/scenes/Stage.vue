@@ -32,6 +32,7 @@ import StageAvatarModelMissing from './stage-avatar-model-missing.vue'
 import StageRenderError from './stage-render-error.vue'
 
 // import { useDuckDb } from '../../composables/use-duck-db'
+import { useTextGeneration } from '../../composables/text-generation'
 import { Emotion, EMOTION_EmotionMotionName_value, EMOTION_VRMExpressionName_value, EmotionThinkMotionName } from '../../constants/emotions'
 import { live2dMotionMagicProfiles, useLive2DMotionMagic, useLive2DMotionMagicSettings } from '../../features/motions/live2d'
 import { getSpeechBusContext, speechOutputGetPlaybackState, speechOutputPlaybackStateChangedEvent } from '../../services/speech/bus'
@@ -436,6 +437,7 @@ watch(() => voice.activeTurns, (turns) => {
 })
 
 const cards = useAiriCardStore()
+const textGeneration = useTextGeneration()
 const disconnectVoiceOutput = voice.connectOutput((turn) => {
   const output = {
     playback,
@@ -465,7 +467,10 @@ const disconnectVoiceOutput = voice.connectOutput((turn) => {
     const characterId = chatSession.sessionMetas[turn.sessionId]?.characterId
     if (!characterId)
       throw new Error('The response session has no character')
-    return speechStore.createOutput(turn, cards.getModules(characterId).speech, output, audioContext)
+    const modules = cards.getModules(characterId)
+    const { provider: providerId, model } = modules.consciousness
+    const generateText = providerId && model ? textGeneration.generateText({ providerId, model }) : undefined
+    return speechStore.createOutput(turn, modules.speech, output, audioContext, generateText)
   }
   catch (error) {
     // Text replies remain available when optional speech output is not configured.

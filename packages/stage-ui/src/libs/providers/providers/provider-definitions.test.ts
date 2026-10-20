@@ -69,6 +69,7 @@ describe('migrated provider definitions', () => {
       'deepgram-tts',
       'microsoft-speech',
       'index-tts-vllm',
+      'cosyvoice3',
       'alibaba-cloud-model-studio',
       'volcengine',
       'minimax-speech',

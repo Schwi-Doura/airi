@@ -3,16 +3,10 @@ import type { VoiceType } from '@proj-airi/stage-ui/composables'
 import type { SpeechProviderWithExtraOptions } from '@xsai-ext/providers/utils'
 
 import { errorMessageFrom } from '@moeru/std'
-import {
-  Alert,
-  ErrorContainer,
-  RadioCardManySelect,
-  RadioCardSimple,
-  TestDummyMarker,
-  VoiceCardManySelect,
-} from '@proj-airi/stage-ui/components'
+import { Alert, ErrorContainer, RadioCardManySelect, RadioCardSimple, TestDummyMarker, VoiceCardManySelect } from '@proj-airi/stage-ui/components'
 import { useAnalytics } from '@proj-airi/stage-ui/composables'
 import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID } from '@proj-airi/stage-ui/libs/providers/providers/official'
+import { useSpeechProviderPresentation } from '@proj-airi/stage-ui/libs/providers/speech/presentation'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores'
 import { useSpeechStore } from '@proj-airi/stage-ui/stores/modules/speech'
 import { useProviderConfigStore } from '@proj-airi/stage-ui/stores/providers/config'
@@ -66,6 +60,8 @@ const {
 
 const voiceSearchQuery = ref('')
 const useSSML = ref(false)
+const providerPresentation = useSpeechProviderPresentation(activeSpeechProvider)
+const useRawSSML = computed(() => useSSML.value && providerPresentation.value.rawSSML)
 const testText = ref('Hello, my name is AI Assistant')
 const ssmlText = ref('')
 const isGenerating = ref(false)
@@ -399,10 +395,10 @@ async function persistSelection() {
 
 // Function to generate speech
 async function generateTestSpeech() {
-  if (!testText.value.trim() && !useSSML.value)
+  if (!testText.value.trim() && !useRawSSML.value)
     return
 
-  if (useSSML.value && !ssmlText.value.trim())
+  if (useRawSSML.value && !ssmlText.value.trim())
     return
 
   const provider = await providersStore.getProviderInstance(activeSpeechProvider.value) as SpeechProviderWithExtraOptions<string, any>
@@ -459,7 +455,7 @@ async function generateTestSpeech() {
       stopTestAudio()
     }
 
-    const speechRequest = useSSML.value
+    const speechRequest = useRawSSML.value
       ? {
           input: ssmlText.value,
           providerConfig,
@@ -484,14 +480,16 @@ async function generateTestSpeech() {
       })
     }
 
-    const response = await generateSpeech({
-      ...provider.speech(
-        model,
-        withManualPreviewAnalytics(speechRequest.providerConfig, previewProvider, previewAnalytics.voice_type),
-      ),
-      input: speechRequest.input,
-      voice: voice.id,
-    })
+    const response = providerPresentation.value.preview
+      ? await providerPresentation.value.preview(testText.value, voice.id, model)
+      : await generateSpeech({
+          ...provider.speech(
+            model,
+            withManualPreviewAnalytics(speechRequest.providerConfig, previewProvider, previewAnalytics.voice_type),
+          ),
+          input: speechRequest.input,
+          voice: voice.id,
+        })
 
     // Convert the response to a blob and create an object URL
     audioUrl.value = URL.createObjectURL(new Blob([response]))
@@ -852,7 +850,8 @@ async function handleDeleteProvider(providerId: string) {
           </Alert>
 
           <!-- Voice parameters -->
-          <div flex="~ col gap-4">
+          <component :is="providerPresentation.controls" v-if="providerPresentation.controls" />
+          <div v-else :class="['flex flex-col gap-4']">
             <FieldRange
               v-model="pitch"
               label="Pitch"
@@ -924,12 +923,13 @@ async function handleDeleteProvider(providerId: string) {
         </h2>
         <div flex="~ col gap-4">
           <FieldCheckbox
+            v-if="providerPresentation.rawSSML"
             v-model="useSSML"
             label="Use Custom SSML"
             description="Enable to input raw SSML instead of plain text"
           />
 
-          <template v-if="!useSSML">
+          <template v-if="!useRawSSML">
             <Textarea
               v-model="testText" h-24
               w-full
@@ -951,8 +951,8 @@ async function handleDeleteProvider(providerId: string) {
             <button
               border="neutral-800 dark:neutral-200 solid 2" transition="border duration-250 ease-in-out"
               rounded-lg px-4 text="neutral-100 dark:neutral-900" py-2 text-sm
-              :disabled="isGenerating || (!testText.trim() && !useSSML) || (useSSML && !ssmlText.trim()) || !activeSpeechVoice"
-              :class="{ 'opacity-50 cursor-not-allowed': isGenerating || (!testText.trim() && !useSSML) || (useSSML && !ssmlText.trim()) || !activeSpeechVoice }"
+              :disabled="isGenerating || (!testText.trim() && !useRawSSML) || (useRawSSML && !ssmlText.trim()) || !activeSpeechVoice"
+              :class="{ 'opacity-50 cursor-not-allowed': isGenerating || (!testText.trim() && !useRawSSML) || (useRawSSML && !ssmlText.trim()) || !activeSpeechVoice }"
               bg="neutral-700 dark:neutral-300" @click="generateTestSpeech"
             >
               <div flex="~ row" items-center gap-2>

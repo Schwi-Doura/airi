@@ -2040,9 +2040,57 @@ pages:
               description: 服务 Endpoint 地区（比如亚太 eastasia 区域）
               label: Endpoint 地区
         title: Microsoft / Azure 语音服务
+      cosyvoice3:
+        title: CosyVoice3（本地）
+        description: 使用本地 CosyVoice3 进行多语言音色克隆。
+        service-title: CosyVoice3 普通版模型
+        service-description: 请启动官方 CosyVoice FastAPI 服务，加载 Fun-CosyVoice3-0.5B-2512 的 llm.pt 普通版权重。权重由服务端选择，默认地址为 http://127.0.0.1:50000/。
+        mode: 合成模式
+        mode-description: 可使用参考音频和原文克隆、跨语言克隆，或通过指令控制表达。
+        modes:
+          zero-shot: 参考音频与原文克隆
+          cross-lingual: 跨语言音色克隆
+          instruct: 音色克隆与表达指令
+        upload: 参考音频（WAV）
+        no-reference: 尚未选择参考音频
+        audio-description: 请上传清晰的 WAV 音频，时长少于 30 秒，大小不超过 2 MiB。音频随 provider 配置保存。
+        reference-text: 参考音频原文
+        reference-text-description: 请准确填写参考音频中的话语，无需添加模型控制标记。
+        instruction: 语音表达指令
+        instruction-description: 描述发音语言与情绪，例如“请用愉快的语气说日语”。该指令应用于每次合成请求。
+        audio-error: 请选择不超过 2 MiB 的 WAV 文件。
+        save-error: 保存 CosyVoice3 配置失败。
       index-tts-vllm:
-        callout_indextts2_unavailable_title: 暂不支持
-        callout_indextts2_unavailable: 目前尚未支持 IndexTTS2，请使用 IndexTTS。
+        local-service-title: 本地多语言语音
+        local-service-description: 请先启动 IndexTTS-2.5 服务。音色克隆使用该服务中注册的参考录音。
+        language: 语音语言
+        language-description: 自动模式在聊天和试听中均使用 Chat 模型识别句子语言，会在合成前增加一次模型请求。语言与情绪均手动指定时可跳过识别。
+        language-auto: 自动
+        controls:
+          save-error: 保存语音设置失败。
+          speed: 语速
+          speed-description: 1× 为正常语速，数值越大说得越快。使用模型原生语速控制。
+          mode: 情绪模式
+          mode-description: 自动情绪与语言识别共用一次 Chat 请求。原音色情绪模式不添加情绪覆盖。
+          emotion: 情绪类型
+          intensity: 情绪强度
+          intensity-description: 手动情绪的强度，或自动情绪的强度上限。建议从较温和的值开始，以保留克隆音色。
+          sentencePauseMs: 句间额外停顿
+          paragraphPauseMs: 段落额外停顿
+          pause-description: 在句子或段落之间额外添加静音。同一句中的语言切换不添加停顿。生成等待可能使实际间隔更长。
+          modes:
+            original: 原音色情绪
+            manual: 手动情绪
+            auto: 自动情绪
+          emotions:
+            happy: 开心
+            angry: 愤怒
+            sad: 悲伤
+            afraid: 害怕
+            disgusted: 厌恶
+            melancholic: 低落
+            surprised: 惊讶
+            calm: 平静
       minimax-speech:
         errors:
           provider-initialization-failed: 初始化 MiniMax 语音提供程序失败。

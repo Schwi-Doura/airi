@@ -60,6 +60,7 @@ const providerAttributesById = {
   'comet-api': paidCloud,
   'comet-api-speech': paidCloud,
   'comet-api-transcription': paidCloud,
+  'cosyvoice3': freeLocal,
   'deepgram-tts': paidCloud,
   'deepseek': paidCloud,
   'elevenlabs': paidCloud,
