@@ -1,5 +1,15 @@
 # Provider Inference
 
+CosyVoice3 uses the official native FastAPI endpoints with the ordinary `Fun-CosyVoice3-0.5B-2512` model.
+The server must load `llm.pt`. Model selection in AIRI does not switch server weights.
+The adapter synthesizes complete sentences sequentially, preserves clone settings, and joins PCM16 output before adding one 24 kHz WAV header.
+It preserves request cancellation and rejects empty or incomplete audio. It does not request Chat annotations.
+See [the setup guide](../../docs/ai/cosyvoice3-zh-cn.md) for deployment and configuration.
+
+IndexTTS exports `indexTtsSettingsSchema` for shared chat and preview settings.
+Its adapter converts speed to `duration_factor`, maps emotion presets to native vectors, and forwards each span's `pause_after_ms`.
+Original expression and zero strength omit the vector. The local API validates native ranges before GPU inference.
+
 `@proj-airi/provider-inference` owns runtime-neutral AIRI provider definitions.
 
 Use this package to list built-in providers, create provider configuration schemas, and create provider instances. The package runs in Node.js and Browser runtimes.
@@ -27,6 +37,14 @@ The host also reports whether it runs on mobile. Chinese and English default to 
 Use `@proj-airi/stage-ui` for saved provider configuration, Vue settings views, Pinia state, authentication, and Electron-native providers. Do not use this package to manage those application concerns.
 
 ## Verify
+
+### Local IndexTTS speech
+
+The `index-tts-vllm` provider connects to a local IndexTTS-2.5 service.
+The service must expose `audio/voices` and `audio/speech` under its configured Base URL.
+The speech adapter forwards the selected language in the request body.
+Use `JA` for Japanese, including sentences that contain only kanji.
+The service owns reference recordings and voice cloning. No API key is required.
 
 Run the package checks from the workspace root:
 

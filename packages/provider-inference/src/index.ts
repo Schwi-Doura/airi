@@ -19,6 +19,8 @@ export function listProviders() {
 export { portableProviderDefinitions }
 export * from './generation'
 export { createWebSpeechAPIProvider, streamWebSpeechAPITranscription } from './providers/local/browser-web-speech-api'
+export { COSYVOICE3_MODEL, cosyVoice3ConfigSchema } from './providers/local/cosyvoice3'
+export * from './providers/local/index-tts-vllm/settings'
 export { createSherpawTranscriptionDefinition, executeSherpawStream, SHERPAW_TRANSCRIPTION_PROVIDER_ID } from './providers/local/sherpaw-transcription'
 export type { SherpawModelResource, SherpawTranscriptionHost } from './providers/local/sherpaw-transcription'
 export * from './providers/local/sherpaw-transcription/models'

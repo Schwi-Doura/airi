@@ -1,14 +1,14 @@
+import type { SpeechProviderWithExtraOptions } from '@xsai-ext/providers/utils'
+
+import type { IndexTtsSpeechOptions } from './settings'
+
 import { errorMessageFrom } from '@moeru/std'
 import { z } from 'zod'
 
 import { defineProvider } from '../../registry'
+import { indexTtsEmotions, indexTtsSettingsSchema } from './settings'
 
-const indexTtsConfigSchema = z.object({
-  baseUrl: z.string().default('http://localhost:11996/tts/'),
-  model: z.string().default('IndexTTS-1.5'),
-})
-
-type IndexTtsConfig = z.input<typeof indexTtsConfigSchema>
+type IndexTtsConfig = z.input<typeof indexTtsSettingsSchema>
 
 function voicesUrl(config: IndexTtsConfig) {
   return `${config.baseUrl ?? 'http://localhost:11996/tts/'}audio/voices`
@@ -21,13 +21,34 @@ export const providerIndexTtsVllm = defineProvider<IndexTtsConfig, 'index-tts-vl
   description: 'index-tts.github.io',
   descriptionLocalize: ({ t }) => t('settings.pages.providers.provider.index-tts-vllm.description'),
   tasks: ['text-to-speech'],
+  requiresCredentials: false,
   iconColor: 'i-lobe-icons:bilibiliindex',
-  createProviderConfig: () => indexTtsConfigSchema,
-  createProvider(config) {
+  createProviderConfig: () => indexTtsSettingsSchema,
+  createProvider(config): SpeechProviderWithExtraOptions<string, IndexTtsSpeechOptions> {
     return {
-      speech: () => ({
+      speech: (model, options) => ({
         baseURL: config.baseUrl ?? 'http://localhost:11996/tts/',
-        model: config.model || 'IndexTTS-1.5',
+        model,
+        // Sentence annotation overrides the saved default, including kanji-only Japanese.
+        fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+          const body: unknown = JSON.parse(String(init?.body))
+          const request = z.object({ model: z.string(), input: z.string(), voice: z.string() }).passthrough().parse(body)
+          const settings = indexTtsSettingsSchema.parse({ ...config, ...options })
+          const emotion = settings.emotion
+          const vector = settings.emotionMode === 'manual' && emotion !== 'neutral' && settings.emotionIntensity > 0
+            ? indexTtsEmotions.map(name => name === emotion ? settings.emotionIntensity : 0)
+            : undefined
+          return globalThis.fetch(input, {
+            ...init,
+            body: JSON.stringify({
+              ...request,
+              language: settings.language,
+              duration_factor: 1 / settings.speed,
+              emo_vector: vector,
+              pause_after_ms: z.number().int().min(0).max(3000).parse(options?.pauseAfterMs ?? 0),
+            }),
+          })
+        },
       }),
     }
   },
@@ -68,10 +89,10 @@ export const providerIndexTtsVllm = defineProvider<IndexTtsConfig, 'index-tts-vl
   },
   extraMethods: {
     listModels: async () => [{
-      id: 'IndexTTS-1.5',
-      name: 'IndexTTS-1.5',
+      id: 'IndexTTS-2.5',
+      name: 'IndexTTS-2.5',
       provider: 'index-tts-vllm',
-      description: 'Default model for Index-TTS vLLM deployment',
+      description: 'Local multilingual voice cloning with IndexTTS-2.5',
       contextLength: 0,
       deprecated: false,
     }],
@@ -86,7 +107,13 @@ export const providerIndexTtsVllm = defineProvider<IndexTtsConfig, 'index-tts-vl
         id: voice,
         name: voice,
         provider: 'index-tts-vllm',
-        languages: [{ code: 'cn', title: 'Chinese' }, { code: 'en', title: 'English' }],
+        languages: [
+          { code: 'zh', title: 'Chinese' },
+          { code: 'en', title: 'English' },
+          { code: 'ja', title: 'Japanese' },
+          { code: 'es', title: 'Spanish' },
+          { code: 'ar', title: 'Arabic' },
+        ],
       }))
     },
   },
