@@ -2,6 +2,16 @@
 
 Shared core for stage
 
+## CosyVoice3 speech
+
+Select CosyVoice3 under Providers > Speech. Start the official FastAPI service with ordinary `Fun-CosyVoice3-0.5B-2512` weights.
+Upload a reference WAV and select reference-transcript, cross-language, or instruction mode. Controls persist through the provider configuration actions.
+The saved reference recording appears as one voice in the Speech module and previews. Chat uses the same native request adapter.
+No additional Chat annotation request is made. This integration buffers each native PCM response before WAV playback.
+Chat waits for complete sentences instead of splitting opening clauses. Previews use the same sentence-based adapter and combine all sentence audio.
+CosyVoice3 commits chat sentences while the model continues generating. One synthesis request runs at a time, independently of audio playback.
+For setup instructions, read [the Chinese guide](../../docs/ai/cosyvoice3-zh-cn.md).
+
 ## NovelAI providers
 
 NovelAI supports chat, speech, and desktop image generation with a Persistent API Token.
@@ -11,7 +21,13 @@ The `custom` voice uses the saved seed. An empty seed uses `Maria`.
 
 The chat adapter decodes native token responses with the GLM-4.6 tokenizer.
 It translates explicit text tool requests into xsAI tool calls. Ordinary JSON examples remain chat text.
+Tool requests can follow dialogue on a new line. The adapter hides their JSON from chat and speech during streaming.
+Text after a tool request is discarded. The next model response uses the actual tool result before reporting success.
+The adapter also accepts tool objects with one JSON-string escape layer. Argument text keeps its quotes and backslashes.
+Tool execution takes priority over character dialogue and stage tokens. Image requests require the image tool before a completion claim.
 Image bytes stay in tool results for display and are omitted from the text model's follow-up request.
+Chat, speech annotation, and drawing analysis share one text-generation lock across provider instances and same-origin windows.
+The lock stays held until the response body finishes or is cancelled. Queued requests respect cancellation.
 
 Configure image generation under Providers > Artistry > NovelAI Diffusion.
 The settings offer V3, V4, V4.5, and V5 model IDs, plus a custom ID field.
@@ -365,3 +381,43 @@ The default pack contains twelve generated chibi reactions of AIRI's official bl
 See [artwork provenance](src/assets/stickers/README.md) for references, exact prompts, and inspection notes.
 These are static assets. No runtime image-generation dependency is included.
 The four development-only Fluent Emoji images are removed. No old-ID migration is included.
+
+## IndexTTS multilingual chat speech
+
+Set IndexTTS language to Auto for mixed Chinese and Japanese replies.
+Before synthesis, AIRI sends complete sentences to the session character's chat model in one separate request.
+The model labels each sentence and splits language changes inside quotations. The original chat display stays unchanged.
+If only whitespace differs, AIRI restores the source whitespace. Changes to words or punctuation remain invalid.
+Invalid annotations receive one correction attempt. A second invalid result fails speech instead of dropping or rewriting words.
+The local API receives an explicit language for each span. Audio plays in source order with the same selected voice.
+This adds model latency and usage. Language labels and IndexTTS pronunciation can still be wrong, especially without enough context.
+Chat and both settings previews share one synthesis path. A fixed language with original or manual emotion skips annotation.
+
+### IndexTTS expression and timing
+
+The IndexTTS controls replace Pitch and SSML in the Speech module. They also appear on the provider page.
+Speed ranges from 0.5× to 2×. The adapter sends its reciprocal as the native duration factor.
+Original expression preserves the reference voice. Manual expression selects one of eight native emotion presets.
+Automatic expression adds emotion and strength to the existing language-labeling request. It requires a configured Chat model.
+The strength slider sets manual strength or the upper bound for automatic strength. Language spans in one sentence keep the same expression.
+Sentence and paragraph pauses default to 250ms and 500ms. Line breaks count as paragraph boundaries.
+Only the last span of a non-final sentence receives extra silence. A language switch and the final sentence receive none.
+The local API appends silence to PCM and disables its internal segment silence to avoid adding the same gap twice.
+Generation delays can increase the audible gap. These controls do not promise uninterrupted real-time playback.
+Previews decode each response and join PCM into one valid WAV. They never concatenate WAV headers.
+
+## Speech provider boundaries
+
+`src/libs/providers/speech/output.ts` selects renderer adapters for local speech providers.
+The shared speech store captures each response configuration and supplies the optional character chat client.
+IndexTTS owns language annotation, emotion annotation, segmentation, and preview synthesis under `speech/index-tts/`.
+CosyVoice3 selects sentence delivery and serial synthesis through the output adapter.
+The annotation agent restores source whitespace and retries invalid replies once.
+
+`src/libs/providers/speech/presentation.ts` selects controls and preview handlers for the shared settings page.
+Provider controls own their persisted settings. Runtime clients and preview cancellation stay outside synchronized state.
+Native requests and configuration schemas belong to `@proj-airi/provider-inference`.
+
+The core speech pipeline exposes segmentation, text delivery, and concurrency hooks without provider IDs.
+Stage supplies the character chat client as an optional capability. CosyVoice3 does not call that client.
+These shared hooks remain separate from provider policies to reduce upstream merge conflicts.

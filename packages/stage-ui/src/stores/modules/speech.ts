@@ -1,3 +1,4 @@
+import type { GenerateText } from '@proj-airi/agents'
 import type { SpeechOutput, TurnRef } from '@proj-airi/core-agent'
 import type { SpeechProviderWithExtraOptions } from '@xsai-ext/providers/utils'
 import type {} from 'pinia-plugin-synced'
@@ -19,6 +20,7 @@ import { x } from 'xastscript'
 import { injectKeyPiniaSynced } from '../../libs/pinia/synced-context'
 import { getDefinedProvider } from '../../libs/providers/providers'
 import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID, pickOfficialSpeechVoice } from '../../libs/providers/providers/official'
+import { getSpeechOutputAdapter } from '../../libs/providers/speech/output'
 import { streamSpeech } from '../../libs/speech/streaming-pipeline'
 import { useProviderConfigStore } from '../providers/config'
 import { useProviderStore } from '../providers/provider'
@@ -556,7 +558,7 @@ export const useSpeechStore = defineStore('speech', () => {
   }
 
   /** Captures one response's provider, voice, model, and settings before any asynchronous work. */
-  function createOutput(turn: TurnRef, selection: AiriExtension['modules']['speech'], output: Pick<SpeechOutput, 'playback' | 'onPlaybackStart' | 'onPlaybackEnd' | 'onSpecial'>, audioContext: AudioContext): SpeechOutput {
+  function createOutput(turn: TurnRef, selection: AiriExtension['modules']['speech'], output: Pick<SpeechOutput, 'playback' | 'onPlaybackStart' | 'onPlaybackEnd' | 'onSpecial'>, audioContext: AudioContext, generateText?: GenerateText): SpeechOutput {
     const providerId = selection.provider
     const config = structuredClone(toRaw(providerStore.getProviderConfig(providerId) ?? {}))
     const selectedVoice = availableVoices.value[providerId]?.find(voice => voice.id === selection.voice_id)
@@ -589,6 +591,7 @@ export const useSpeechStore = defineStore('speech', () => {
     if (!model || !voiceId)
       throw new Error('Speech requires a model and voice')
     const provider = providersStore.getProviderInstance<SpeechProviderWithExtraOptions<string, Record<string, unknown>>>(providerId)
+    const adapter = getSpeechOutputAdapter(providerId)?.({ provider, config, model, voice: voiceId, generateText })
     return { ...output, synthesize: async (request, signal) => {
       signal.throwIfAborted()
       const client = await provider
@@ -597,9 +600,10 @@ export const useSpeechStore = defineStore('speech', () => {
       const settings = providerId === OFFICIAL_SPEECH_PROVIDER_ID
         ? { ...config, extraBody: { ...(config.extraBody as Record<string, unknown> | undefined), airi_analytics: { trigger: 'auto', source: 'chat_auto_tts', voice_type: voiceType, turn_id: turn.turnId } } }
         : config
-      const audio = await generateSpeech({ ...client.speech(model, settings), input, voice: voiceId, abortSignal: signal })
+      const speechSettings = request.language ? { ...settings, language: request.language } : settings
+      const audio = await generateSpeech({ ...client.speech(model, speechSettings), input, voice: voiceId, abortSignal: signal })
       return new Blob([audio])
-    } }
+    }, ...adapter }
   }
 
   function withAiriTtsAnalytics(

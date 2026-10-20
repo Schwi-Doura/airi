@@ -1,8 +1,12 @@
+import type { GenerateText } from '@proj-airi/agents'
 import type { LeadershipMode, SyncedPiniaRuntime } from 'pinia-plugin-synced'
 import type { App } from 'vue'
 
 import en from '@proj-airi/i18n/locales/en'
 
+import { toWavFromPCM16 } from '@proj-airi/audio/encoding'
+import { VoiceController } from '@proj-airi/core-agent'
+import { Playback } from '@proj-airi/pipelines-audio'
 import { createPinia, disposePinia } from 'pinia'
 import { createSyncedPiniaPlugin } from 'pinia-plugin-synced'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -80,6 +84,111 @@ async function createSyncedPair() {
 }
 
 describe('speech synchronization', () => {
+  it('plays CosyVoice3 chat audio through the normal output path without Chat annotations', async () => {
+    const requests: string[] = []
+    stubCatalogFetch(vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.body instanceof FormData) {
+        requests.push(String(init.body.get('tts_text')))
+        return new Response(new Uint8Array(4800))
+      }
+      return Response.json({ paths: { '/inference_zero_shot': {}, '/inference_cross_lingual': {}, '/inference_instruct2': {} } })
+    }))
+    const context = createSyncedContext(`speech:${crypto.randomUUID()}`, 'leader-only')
+    await vi.waitFor(() => expect(context.runtime.isLeader()).toBe(true))
+    const reference = new Uint8Array(toWavFromPCM16(new Uint8Array([0, 0]), 16000))
+    await useProviderConfigStore(context.pinia).ensureProvider('cosyvoice3', 'cosyvoice3', {
+      referenceAudio: `data:audio/wav;base64,${btoa(String.fromCharCode(...reference))}`,
+      referenceText: '参考声音。',
+    })
+    const audio = new AudioContext()
+    const played: number[] = []
+    const playback = new Playback({ nowMs: () => 0, play: clip => ({
+      done: (async () => {
+        const buffer = await audio.decodeAudioData(await (clip.audio as Blob).arrayBuffer())
+        played.push(buffer.length)
+        return { throughMs: 100 }
+      })(),
+      stop: async () => ({ throughMs: 0 }),
+    }) })
+    const generate = vi.fn<GenerateText>()
+    const controller = new VoiceController({ speech: turn => context.speechStore.createOutput(turn, {
+      provider: 'cosyvoice3',
+      model: 'Fun-CosyVoice3-0.5B-2512',
+      voice_id: 'reference',
+    }, { playback }, audio, generate) })
+    try {
+      const response = controller.openResponse({ sessionId: 'test', turnId: 'cosyvoice3' })
+      const output = response.openSpeech({ purpose: 'answer' })
+      output.write('你好，这是一个很长很长的中文句子，后面还有内容。')
+      await vi.waitFor(() => expect(requests).toHaveLength(1))
+      await vi.waitFor(() => expect(played).toHaveLength(1))
+      output.write('今日はいい天気で、')
+      output.write('一緒にお茶を飲みませんか。よろしくお願いします。')
+      output.end()
+      expect(await response.finish()).toBe('finished')
+      expect(requests).toEqual(['你好，这是一个很长很长的中文句子，后面还有内容。', '今日はいい天気で、一緒にお茶を飲みませんか。', 'よろしくお願いします。'])
+      expect(played.length).toBeGreaterThan(0)
+      expect(played.every(length => length > 0)).toBe(true)
+      expect(generate).not.toHaveBeenCalled()
+    }
+    finally {
+      await audio.close()
+    }
+  })
+
+  it('sends annotated Chinese and Japanese spans to IndexTTS and plays them in source order', async () => {
+    const requests: { input: string, language: string, voice: string, duration_factor: number, emo_vector: number[], pause_after_ms: number }[] = []
+    stubCatalogFetch(vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method !== 'POST')
+        return Response.json({ unicorn: {} })
+      const body = JSON.parse(String(init.body))
+      requests.push(body)
+      return new Response(JSON.stringify(body))
+    }))
+    const context = createSyncedContext(`speech:${crypto.randomUUID()}`, 'leader-only')
+    await vi.waitFor(() => expect(context.runtime.isLeader()).toBe(true))
+    await useProviderConfigStore(context.pinia).ensureProvider('index-tts-vllm', 'index-tts-vllm', {
+      baseUrl: 'http://localhost:11996/tts/',
+      model: 'IndexTTS-2.5',
+      language: 'auto',
+      speed: 1.25,
+      emotionMode: 'auto',
+      emotionIntensity: 0.4,
+    })
+    const generate = vi.fn<GenerateText>().mockResolvedValue(JSON.stringify([
+      [{ text: '今天。', language: 'ZH', emotion: 'happy', intensity: 0.5 }],
+      [{ text: '了解。', language: 'JA', emotion: 'happy', intensity: 0.5 }],
+    ]))
+    const played: string[] = []
+    const playback = new Playback({ nowMs: () => 0, play: clip => ({
+      done: (clip.audio as Blob).text().then((body) => {
+        played.push(JSON.parse(body).input)
+        return { throughMs: 1 }
+      }),
+      stop: async () => ({ throughMs: 0 }),
+    }) })
+    const audio = new AudioContext()
+    const controller = new VoiceController({ speech: turn => context.speechStore.createOutput(turn, { provider: 'index-tts-vllm', model: 'IndexTTS-2.5', voice_id: 'unicorn' }, { playback }, audio, generate) })
+    try {
+      const response = controller.openResponse({ sessionId: 'test', turnId: 'mixed' })
+      const speech = response.openSpeech({ purpose: 'answer' })
+      speech.write('今天。了解。')
+      speech.end()
+      expect(await response.finish()).toBe('finished')
+      expect(requests.map(request => request.language)).toEqual(['ZH', 'JA'])
+      expect(requests.map(request => request.voice)).toEqual(['unicorn', 'unicorn'])
+      expect(requests.map(request => request.duration_factor)).toEqual([0.8, 0.8])
+      expect(requests.map(request => request.pause_after_ms)).toEqual([250, 0])
+      expect(requests[0].emo_vector).toEqual([0.2, 0, 0, 0, 0, 0, 0, 0])
+      expect(played).toEqual(['今天。', '了解。'])
+      expect(generate).toHaveBeenCalledOnce()
+    }
+    finally {
+      await controller.close()
+      await audio.close()
+    }
+  })
+
   // https://github.com/moeru-ai/airi/pull/2490#discussion_r3967949219
   // ROOT CAUSE: Catalog invalidation erased the voice just applied by a card.
   // The selection command must discard the old catalog before setting the override.

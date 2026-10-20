@@ -2,6 +2,9 @@
 
 `@proj-airi/stage-pages` contains route-level Vue pages that multiple AIRI stage applications share.
 
+The CosyVoice3 Speech provider page configures the ordinary local model, a reference WAV, its transcript, and expression instructions.
+It shares controls with the Speech module and hides unsupported SSML controls.
+
 ## Use
 
 Add a page under `src/pages`. Each stage application scans this directory through its Vite router configuration.
@@ -23,6 +26,11 @@ Keep application-specific pages in the owning application. Put reusable business
 Put primitive UI components in `@proj-airi/ui`. Put shared layouts in `@proj-airi/stage-layouts`.
 
 ## Provider settings
+
+The IndexTTS speech page configures a local IndexTTS-2.5 service without an API key.
+Its language selector persists the synthesis language, including explicit Japanese for kanji-only sentences.
+The IndexTTS provider page and Speech module share speed, emotion, and pause controls.
+Both previews use the chat sentence planner. IndexTTS hides unsupported Pitch and SSML controls.
 
 The active chat and vision provider routes live under `/settings/providers`. They use `ProviderGenerationSettings` from stage-ui to render protocol and native search options from the provider catalog. The V2 editor is a separate consumer and does not replace these routes.
 

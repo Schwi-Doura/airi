@@ -2146,11 +2146,59 @@ pages:
               description: Speech Service region
               label: Region
         title: Microsoft / Azure Speech
+      cosyvoice3:
+        title: CosyVoice3 (Local)
+        description: Local multilingual voice cloning with CosyVoice3.
+        service-title: CosyVoice3 ordinary model
+        service-description: Start the official CosyVoice FastAPI service with Fun-CosyVoice3-0.5B-2512 and llm.pt. The server selects the weights. Default address is http://127.0.0.1:50000/.
+        mode: Synthesis mode
+        mode-description: Clone with a transcript, clone across languages, or apply an expression instruction.
+        modes:
+          zero-shot: Reference audio and transcript
+          cross-lingual: Cross-language voice cloning
+          instruct: Voice cloning with instructions
+        upload: Reference recording (WAV)
+        no-reference: No reference recording selected
+        audio-description: Upload a clear WAV recording under 30 seconds and 2 MiB. The recording is saved with provider settings.
+        reference-text: Reference transcript
+        reference-text-description: Enter exactly what the reference speaker says. Do not add model control tokens.
+        instruction: Speech instruction
+        instruction-description: Describe the language and expression, for example a cheerful Japanese voice. The instruction applies to every synthesis request.
+        audio-error: Select a WAV file no larger than 2 MiB.
+        save-error: Failed to save CosyVoice3 settings.
       index-tts-vllm:
         description: https://index-tts.github.io/
         title: Bilibili / IndexTTS
-        callout_indextts2_unavailable_title: Limited Support
-        callout_indextts2_unavailable: Support for IndexTTS2 is currently unavailable. Please use IndexTTS.
+        local-service-title: Local multilingual speech
+        local-service-description: Start your IndexTTS-2.5 service before generating speech. Voice cloning uses the reference recordings registered in that service.
+        language: Speech language
+        language-description: Auto labels sentence languages with your Chat model before synthesis, in chat and previews. Fixed language and manual emotion skip the model request.
+        language-auto: Auto
+        controls:
+          save-error: Failed to save speech settings.
+          speed: Speaking speed
+          speed-description: 1× is normal. Higher values speak faster. Uses native synthesis speed control.
+          mode: Emotion mode
+          mode-description: Automatic emotion shares the language-labeling request. The original voice expression is kept when no emotion override is selected.
+          emotion: Emotion
+          intensity: Emotion strength
+          intensity-description: Manual strength, or the maximum automatic strength. Start gently to preserve the cloned voice.
+          sentencePauseMs: Extra sentence pause
+          paragraphPauseMs: Extra paragraph pause
+          pause-description: Extra silence between sentences or paragraphs. Language changes inside one sentence add no pause. Generation delays may add more waiting.
+          modes:
+            original: Original voice expression
+            manual: Manual emotion
+            auto: Automatic emotion
+          emotions:
+            happy: Happy
+            angry: Angry
+            sad: Sad
+            afraid: Afraid
+            disgusted: Disgusted
+            melancholic: Melancholic
+            surprised: Surprised
+            calm: Calm
       azure-ai-foundry:
         description: Azure AI Foundry
         title: Azure AI Foundry
