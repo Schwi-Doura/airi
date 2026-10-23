@@ -1,4 +1,3 @@
-import type { GenerateText } from '@proj-airi/agents'
 import type { SpeechOutput, TurnRef } from '@proj-airi/core-agent'
 import type { SpeechProviderWithExtraOptions } from '@xsai-ext/providers/utils'
 import type {} from 'pinia-plugin-synced'
@@ -20,7 +19,6 @@ import { x } from 'xastscript'
 import { injectKeyPiniaSynced } from '../../libs/pinia/synced-context'
 import { getDefinedProvider } from '../../libs/providers/providers'
 import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID, pickOfficialSpeechVoice } from '../../libs/providers/providers/official'
-import { getSpeechOutputAdapter } from '../../libs/providers/speech/output'
 import { streamSpeech } from '../../libs/speech/streaming-pipeline'
 import { useProviderConfigStore } from '../providers/config'
 import { useProviderStore } from '../providers/provider'
@@ -387,15 +385,6 @@ export const useSpeechStore = defineStore('speech', () => {
   function ensureActiveSpeechModel() {
     ensureStreamingDefaultModel()
 
-    if (providersStore.findProviderDefinition(activeSpeechProvider.value)?.id === 'novelai-speech') {
-      if (!['v1', 'v2'].includes(activeSpeechModel.value)) {
-        const config = providerStore.getProviderConfig(activeSpeechProvider.value)
-        activeSpeechModel.value = config?.model === 'v1' ? 'v1' : 'v2'
-        clearVoiceSelection()
-      }
-      return
-    }
-
     if (activeSpeechProvider.value !== OFFICIAL_SPEECH_PROVIDER_ID) {
       ensureSingleOptionSpeechModel()
       return
@@ -482,11 +471,6 @@ export const useSpeechStore = defineStore('speech', () => {
     // A selection watcher can run before the ownership watcher reaches its RPC.
     // Reject expired recommendations at their consumer as well as on notification.
     discardExpiredVoiceCatalogs()
-    if (providersStore.findProviderDefinition(activeSpeechProvider.value)?.id === 'novelai-speech') {
-      const voices = availableVoices.value[activeSpeechProvider.value] ?? []
-      if (voices.length && !voices.some(voice => voice.id === activeSpeechVoiceId.value))
-        activeSpeechVoiceId.value = voices.find(voice => voice.id === 'custom')?.id ?? ''
-    }
     const selected = pickOfficialSpeechVoice({
       activeSpeechProvider: activeSpeechProvider.value,
       activeSpeechVoiceId: activeSpeechVoiceId.value,
@@ -558,7 +542,7 @@ export const useSpeechStore = defineStore('speech', () => {
   }
 
   /** Captures one response's provider, voice, model, and settings before any asynchronous work. */
-  function createOutput(turn: TurnRef, selection: AiriExtension['modules']['speech'], output: Pick<SpeechOutput, 'playback' | 'onPlaybackStart' | 'onPlaybackEnd' | 'onSpecial'>, audioContext: AudioContext, generateText?: GenerateText): SpeechOutput {
+  function createOutput(turn: TurnRef, selection: AiriExtension['modules']['speech'], output: Pick<SpeechOutput, 'playback' | 'onPlaybackStart' | 'onPlaybackEnd' | 'onSpecial'>, audioContext: AudioContext): SpeechOutput {
     const providerId = selection.provider
     const config = structuredClone(toRaw(providerStore.getProviderConfig(providerId) ?? {}))
     const selectedVoice = availableVoices.value[providerId]?.find(voice => voice.id === selection.voice_id)
@@ -568,6 +552,7 @@ export const useSpeechStore = defineStore('speech', () => {
     const useSSML = ssmlEnabled.value
     const canUseSSML = ['elevenlabs', 'microsoft-speech', 'azure-speech'].includes(providerId) || (providerId === 'alibaba-cloud-model-studio' && model === 'cosyvoice-v2')
     const pitchValue = pitch.value
+    const language = voice?.languages[0]?.code
     const voiceType = providerId === OFFICIAL_SPEECH_PROVIDER_ID || providerId === OFFICIAL_SPEECH_STREAMING_PROVIDER_ID
       ? 'official_selected' as const
       : 'custom_configured' as const
@@ -578,7 +563,7 @@ export const useSpeechStore = defineStore('speech', () => {
       if (!streamingModel?.includes('/') || !voiceId)
         throw new Error('Streaming speech requires a model and voice')
       const resource = streamingModel.split('/', 2)[1]
-      return { ...output, stream: async (text, signal) => streamSpeech({
+      return { ...output, language, stream: async (text, signal) => streamSpeech({
         audioContext,
         model: streamingModel,
         voice: voiceId,
@@ -591,8 +576,7 @@ export const useSpeechStore = defineStore('speech', () => {
     if (!model || !voiceId)
       throw new Error('Speech requires a model and voice')
     const provider = providersStore.getProviderInstance<SpeechProviderWithExtraOptions<string, Record<string, unknown>>>(providerId)
-    const adapter = getSpeechOutputAdapter(providerId)?.({ provider, config, model, voice: voiceId, generateText })
-    return { ...output, synthesize: async (request, signal) => {
+    return { ...output, language, synthesize: async (request, signal) => {
       signal.throwIfAborted()
       const client = await provider
       signal.throwIfAborted()
@@ -600,10 +584,9 @@ export const useSpeechStore = defineStore('speech', () => {
       const settings = providerId === OFFICIAL_SPEECH_PROVIDER_ID
         ? { ...config, extraBody: { ...(config.extraBody as Record<string, unknown> | undefined), airi_analytics: { trigger: 'auto', source: 'chat_auto_tts', voice_type: voiceType, turn_id: turn.turnId } } }
         : config
-      const speechSettings = request.language ? { ...settings, language: request.language } : settings
-      const audio = await generateSpeech({ ...client.speech(model, speechSettings), input, voice: voiceId, abortSignal: signal })
+      const audio = await generateSpeech({ ...client.speech(model, settings), input, voice: voiceId, abortSignal: signal })
       return new Blob([audio])
-    }, ...adapter }
+    } }
   }
 
   function withAiriTtsAnalytics(
