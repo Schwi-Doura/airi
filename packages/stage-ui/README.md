@@ -2,39 +2,17 @@
 
 Shared core for stage
 
-## CosyVoice3 speech
+## Optional modules
 
-Select CosyVoice3 under Providers > Speech. Start the official FastAPI service with ordinary `Fun-CosyVoice3-0.5B-2512` weights.
-Upload a reference WAV and select reference-transcript, cross-language, or instruction mode. Controls persist through the provider configuration actions.
-The saved reference recording appears as one voice in the Speech module and previews. Chat uses the same native request adapter.
-No additional Chat annotation request is made. This integration buffers each native PCM response before WAV playback.
-Chat waits for complete sentences instead of splitting opening clauses. Previews use the same sentence-based adapter and combine all sentence audio.
-CosyVoice3 commits chat sentences while the model continues generating. One synthesis request runs at a time, independently of audio playback.
-For setup instructions, read [the Chinese guide](../../docs/ai/cosyvoice3-zh-cn.md).
+Provider lists expose `None` for optional features. Switches control module activation.
+Consciousness remains required. Minecraft runs as an external service and keeps its own lifecycle.
 
-## NovelAI providers
-
-NovelAI supports chat, speech, and desktop image generation with a Persistent API Token.
-Configure chat and speech through Providers. Select each configured provider in its module.
-Speech supports TTS v1/v2 and the `custom`, `Maria`, `Kayra`, and `Clio` voice seeds.
-The `custom` voice uses the saved seed. An empty seed uses `Maria`.
-
-The chat adapter decodes native token responses with the GLM-4.6 tokenizer.
-It translates explicit text tool requests into xsAI tool calls. Ordinary JSON examples remain chat text.
-Tool requests can follow dialogue on a new line. The adapter hides their JSON from chat and speech during streaming.
-Text after a tool request is discarded. The next model response uses the actual tool result before reporting success.
-The adapter also accepts tool objects with one JSON-string escape layer. Argument text keeps its quotes and backslashes.
-Tool execution takes priority over character dialogue and stage tokens. Image requests require the image tool before a completion claim.
-Image bytes stay in tool results for display and are omitted from the text model's follow-up request.
-Chat, speech annotation, and drawing analysis share one text-generation lock across provider instances and same-origin windows.
-The lock stays held until the response body finishes or is cancelled. Queued requests respect cancellation.
-
-Configure image generation under Providers > Artistry > NovelAI Diffusion.
-The settings offer V3, V4, V4.5, and V5 model IDs, plus a custom ID field.
-The positive prompt prefix precedes each drawing description. Negative prompts combine with request-specific negatives.
-Both fields start empty and support local persistence and cross-window synchronization.
-The character editor can select NovelAI as an Artistry override.
-Image-to-image and voice cloning are not exposed.
+Hearing, Speech, and Vision persist their enable states separately from provider and model selections.
+Disabling these modules preserves credentials and selections. Re-enabling restores their use.
+Their synchronized stores replicate the enable states across desktop windows.
+Hearing cancels active transcription and rejects results from its previous enabled period.
+The voice host also stops listening and dictation. Text chat can continue without transcribing stored recordings.
+Disabling Speech stops its producers and playback. Text generation and tool work continue until the chat turn ends.
 
 ## Experimental features
 
@@ -95,8 +73,14 @@ Consumers subscribe to the microphone input with their own abort signal. The las
 - `useVoiceStore` owns application routing, drafts, responses, and host command registration.
 - `useVoiceController` binds public controller state to Vue and moves the controller to the input of the selected device.
 - `useVoiceInput` maps hold and release controls to host commands.
-- `VoiceInputButton` is the voice control of desktop and web composers. Click it to start, and click again to stop. Hover or right-click it for the mode, Auto send, the microphone, and continuous listening. Its status bar shows the waveform and time, and keeps a voice message that waits to be sent. Dictation writes its live transcript into the composer text and creates no voice draft.
-- `VoiceComposer` is the touch voice control of mobile composers. Hold it to record, slide left to cancel, and slide up to lock. A voice message is sent on release.
+- `VoiceInputButton` is the voice control of the desktop app composers. Click it to start, and click again to stop. Hover or right-click it for the mode, Auto send, the microphone, and continuous listening. Its status bar shows the waveform and time, and keeps a voice message that waits to be sent. Dictation writes its live transcript into the composer text and creates no voice draft.
+- `ChatComposerVoiceInput` is the microphone inside the web and mobile composer text field. A tap acts on the mode. A long press or a right-click opens a menu with the mode and Auto send. Other Hearing options are in settings.
+  - Dictation, the default: a tap records. The microphone becomes a neutral stop button in place, and the waveform and time fill the host area beside it. A second tap puts the text into the composer, or sends it with Auto send.
+  - Walkie-talkie: a tap turns the field into a hold-to-talk bar. A release ends the speech. A drag up before the release cancels it.
+  - Voice message: a tap records audio. A second tap sends it with Auto send, or keeps it for the send button.
+- `ChatComposerAddMenu` is the `+` button of the web and mobile composers. It attaches images or starts a voice call.
+- `VoicePresence` shows live speech, editable drafts, and the sent text. The desktop app inlay window and the web composers share it. A window host adds its own Escape shortcut, hit testing, and position through `shownChange` and the exposed `dismiss`.
+- `useVoiceCallStore` owns a voice call. A call is continuous listening that the user starts. It starts an input on speech in every input mode and sends each input at once, so it never keeps a draft. Mute keeps the microphone open, cancels the speech that is captured now, and starts no input: no voice activity input, no Push to Talk hold, and no wake. A call ends when Hearing turns off or loses its transcription provider. An input that began during a call is sent at once, also when it finishes after the hang-up. The microphone switch in Hearing closes the microphone for every feature, so a call does not start while it is off, and turning it off ends the call. `VoiceCallCapsule` is the call UI of every layout. It shows at the top of the page for the whole call, with the hang-up button, the time, and a fading waveform. Only its hang-up button ends the call. The composer shows the mute button in place of the microphone during a call.
 - `useVoiceMessagesStore` owns voice message recordings and their attachment submission.
 - Hearing selects providers and converts captured PCM to each provider's upload format. It does not open the microphone.
 - Speech preserves existing chunked synthesis and bidirectional provider output.
@@ -108,7 +92,7 @@ A pause of 1.2 seconds can end an input. With the end judge on, which is the def
 The judge then ends a finished message at the pause, and an unfinished one waits for the speaker to continue.
 A failed or slow judgement never blocks new speech. Without the end judge, the 1.2-second pause ends every input.
 
-The host snapshot carries the corrected transcript segments of the active input. `VoiceDrafts` shows them as the continuation of the draft, in one paragraph. The paragraph is read-only while speech is transcribed, and becomes the editable draft when the speech settles. Final text uses the body color. Pending text uses the theme color at a lower opacity, and the newest pending segment uses full opacity.
+The host snapshot carries the corrected transcript segments of the active input. `VoiceDrafts` is the draft composer inside `VoicePresence`. It shows them as the continuation of the draft, in one paragraph. The paragraph is read-only while speech is transcribed, and becomes the editable draft when the speech settles. Final text uses the body color. Pending text uses the theme color at a lower opacity, and the newest pending segment uses full opacity.
 A draft that the host is sending stays hidden. Drafts of other conversations show as named chips. `VoiceDrafts` emits `presence`, so a host can react when it shows nothing, for example after a send or a discard.
 Rephrasing is on by default. A failure or a 10-second timeout submits the provider text.
 
@@ -132,6 +116,7 @@ Wake word detection runs in every mode that listens continuously. In `always-on`
 The voice host publishes the detector preparation in its snapshot as `wakeWords`, so a settings window can show it.
 
 Each stage page calls `useVoiceListening` once. It is the one place that starts or stops continuous listening.
+A voice call always listens. Disposing the scope also ends the call, because the stage page that listens shows the call controls. Outside a call, the `continuous` option decides if the input mode can listen. The web and Pocket stages turn it off on small screens, because they have no control for it there. The microphone settings store reads the same decision as `continuousAllowed`, so the listening preference does not hold the microphone open there either. `HearingConfig` then hides the input mode and the microphone switch outside the desktop app.
 `listensContinuously(mode)` in `stores/modules/hearing.ts` decides which modes run detection and keep the microphone open.
 To add a mode, extend `HearingInputMode`, `listensContinuously`, `startsInputOnSpeech`, and `useVoiceListening`.
 
@@ -190,6 +175,19 @@ A host can pass its own `detectWakeWord` to `voice.startListening`. Then the bui
 The detector remains active during playback. A supplied `acceptSpeech` classifier can reject playback echo before admission.
 The default policy allows barge-in when the browser reports echo cancellation. Without that support, automatic admission waits for playback to end.
 Model selection, acoustic echo classification, and enrollment remain external integrations.
+
+## Web search
+
+Open **Settings → Modules → Web Search**, select **Tavily** or **DeepSeek**, enter that service's API key, and enable search.
+Tavily is the default. Each service keeps its own device-local key when you switch services.
+These credentials are independent of the chat provider. Any chat model that supports tool calls can use the selected search service.
+Resetting settings clears both keys and restores Tavily with search disabled.
+
+DeepSeek uses the [Search API](https://api-docs.deepseek.com/zh-cn/api/search/).
+Queries accept 1–128 Unicode characters and support operators such as `site:` and `after:`.
+The tool requests five results by default, with a maximum of ten. It uses summaries without fetching full pages.
+Results retain source links and site icons in the existing search cards. Search requests time out after 15 seconds and stop when the turn stops.
+An API error fails the tool call without switching services. Use another search service when your network cannot reach the selected endpoint.
 
 ## Chat sampling
 
@@ -401,43 +399,3 @@ The default pack contains twelve generated chibi reactions of AIRI's official bl
 See [artwork provenance](src/assets/stickers/README.md) for references, exact prompts, and inspection notes.
 These are static assets. No runtime image-generation dependency is included.
 The four development-only Fluent Emoji images are removed. No old-ID migration is included.
-
-## IndexTTS multilingual chat speech
-
-Set IndexTTS language to Auto for mixed Chinese and Japanese replies.
-Before synthesis, AIRI sends complete sentences to the session character's chat model in one separate request.
-The model labels each sentence and splits language changes inside quotations. The original chat display stays unchanged.
-If only whitespace differs, AIRI restores the source whitespace. Changes to words or punctuation remain invalid.
-Invalid annotations receive one correction attempt. A second invalid result fails speech instead of dropping or rewriting words.
-The local API receives an explicit language for each span. Audio plays in source order with the same selected voice.
-This adds model latency and usage. Language labels and IndexTTS pronunciation can still be wrong, especially without enough context.
-Chat and both settings previews share one synthesis path. A fixed language with original or manual emotion skips annotation.
-
-### IndexTTS expression and timing
-
-The IndexTTS controls replace Pitch and SSML in the Speech module. They also appear on the provider page.
-Speed ranges from 0.5× to 2×. The adapter sends its reciprocal as the native duration factor.
-Original expression preserves the reference voice. Manual expression selects one of eight native emotion presets.
-Automatic expression adds emotion and strength to the existing language-labeling request. It requires a configured Chat model.
-The strength slider sets manual strength or the upper bound for automatic strength. Language spans in one sentence keep the same expression.
-Sentence and paragraph pauses default to 250ms and 500ms. Line breaks count as paragraph boundaries.
-Only the last span of a non-final sentence receives extra silence. A language switch and the final sentence receive none.
-The local API appends silence to PCM and disables its internal segment silence to avoid adding the same gap twice.
-Generation delays can increase the audible gap. These controls do not promise uninterrupted real-time playback.
-Previews decode each response and join PCM into one valid WAV. They never concatenate WAV headers.
-
-## Speech provider boundaries
-
-`src/libs/providers/speech/output.ts` selects renderer adapters for local speech providers.
-The shared speech store captures each response configuration and supplies the optional character chat client.
-IndexTTS owns language annotation, emotion annotation, segmentation, and preview synthesis under `speech/index-tts/`.
-CosyVoice3 selects sentence delivery and serial synthesis through the output adapter.
-The annotation agent restores source whitespace and retries invalid replies once.
-
-`src/libs/providers/speech/presentation.ts` selects controls and preview handlers for the shared settings page.
-Provider controls own their persisted settings. Runtime clients and preview cancellation stay outside synchronized state.
-Native requests and configuration schemas belong to `@proj-airi/provider-inference`.
-
-The core speech pipeline exposes segmentation, text delivery, and concurrency hooks without provider IDs.
-Stage supplies the character chat client as an optional capability. CosyVoice3 does not call that client.
-These shared hooks remain separate from provider policies to reduce upstream merge conflicts.

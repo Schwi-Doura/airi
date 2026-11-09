@@ -67,6 +67,7 @@ docs:
   danmaku: Message feed
   pin: Keep on top
   fold: Hide chat
+  conversations: Conversations
   composer:
     show: Show the message box
     hide: Hide the message box
@@ -91,6 +92,15 @@ widgets:
 inlay:
   dismiss: Dismiss
 
+window:
+  minimize: Minimize
+  maximize: Maximize
+  restore: Restore
+  close: Close
+  titles:
+    about: About AIRI
+    editor: AIRI Editor
+
 notice:
   'fade-on-hover':
     title: Fade on Hover
@@ -110,14 +120,19 @@ notice:
 about:
   subtitle: Desktop ver.
   current-version: Current Version
+  build-origin: "Built {time} from {branch}{'@'}{commit}"
   common:
     cancel: Cancel
+    close: Close
   links:
     title: Links
     home: Home
     documentation: Documentations
     github: GitHub
   update:
+    auto-download:
+      label: Download updates automatically
+      description: Turn this off to download each update only when you select Download Update.
     lane:
       label: Update lane
       description: Choose channel release to follow
@@ -127,9 +142,11 @@ about:
       stable: Stable
       alpha: Alpha
       beta: Beta
-      nightly: Nightly
       canary: Canary
+      nightly: Nightly
+      dev: Dev
     status:
+      manual-install-required: Version v{version} needs a new install. Download it and install it by hand.
       downloading: Downloading update...
       error-prefix: Error
       latest: Up to date (v{version}).
@@ -137,6 +154,7 @@ about:
         windows: Update ready to install silently (v{version}).
         restart: Update ready to install on restart (v{version}).
     actions:
+      open-download-page: Open download page
       download: Download Update
       download-short: Download
       confirm-download: Confirm Download
@@ -149,10 +167,24 @@ about:
       restart-silent: Restart to update silently
       restart-install: Restart to install update
       confirm-restart: Confirm Restart
+      whats-new: "What's new"
+      view-changes: View code changes
     dialog:
       title: Update Available
       description: A new version (v{version}) is available.
       no-release-notes-markdown: _No release notes provided._
+      view-on-github: View on GitHub
+    notices:
+      admin-required:
+        title: Administrator approval needed
+        description: AIRI is installed in a protected Windows folder. When you install the update, Windows can ask for administrator approval (UAC).
+        path: 'Install folder: {path}'
+      downgrade-available:
+        title: This update is an older version
+        description: The selected update lane offers an older build than your current version. If you install this update, AIRI goes back to the older version.
+      downgrade-downloaded:
+        title: Older version downloaded
+        description: The package from the selected update lane is an older version. When AIRI restarts, it installs this older version.
 computer-use-tool-call:
   help: Help
   status:

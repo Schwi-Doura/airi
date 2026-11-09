@@ -1,35 +1,32 @@
 <script setup lang="ts">
+import type { SpeechProvider } from '@xsai-ext/providers/utils'
+
 import {
-  IndexTtsControls,
   SpeechPlayground,
   SpeechProviderSettings,
 } from '@proj-airi/stage-ui/components'
-import { useIndexTtsPreview } from '@proj-airi/stage-ui/libs/providers/speech/index-tts/preview'
 import { useSpeechStore } from '@proj-airi/stage-ui/stores/modules/speech'
 import { useProviderConfigStore } from '@proj-airi/stage-ui/stores/providers/config'
 import { useProviderStore } from '@proj-airi/stage-ui/stores/providers/provider'
-import { Callout, FieldSelect } from '@proj-airi/ui'
-import { computed, onMounted } from 'vue'
+import { Alert } from '@proj-airi/ui'
+import { computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 
 const providerId = 'index-tts-vllm'
-const defaultModel = 'IndexTTS-2.5'
+const defaultModel = 'IndexTTS-1.5'
 
 const speechStore = useSpeechStore()
 const providersStore = useProviderStore()
 const providerStore = useProviderConfigStore()
-const preview = useIndexTtsPreview()
-const language = computed(() => String(providerStore.getProviderConfig(providerId)?.language ?? 'auto'))
-const languageOptions = computed(() => [
-  { value: 'auto', label: t('settings.pages.providers.provider.index-tts-vllm.language-auto') },
-  { value: 'ZH', label: '中文' },
-  { value: 'EN', label: 'English' },
-  { value: 'JA', label: '日本語' },
-  { value: 'ES', label: 'Español' },
-  { value: 'AR', label: 'العربية' },
-])
+// const { configs: providers } = storeToRefs(providerStore)
+
+// Check if API key is configured
+// const apiKeyConfigured = computed(() => !!providers.value[providerId]?.apiKey)
+const apiKeyConfigured = true // Assuming API key is always configured as its not required
+
+// Get available voices for Index TTS provider
 const availableVoices = computed(() => {
   return speechStore.availableVoices[providerId] || []
 })
@@ -38,52 +35,59 @@ onMounted(async () => {
   await speechStore.loadVoicesForProvider(providerId)
 })
 
-async function saveLanguage(value: string | undefined) {
-  if (!value)
-    return
-  await providersStore.initializeProvider(providerId)
-  await providerStore.patchProviderConfig(providerId, { language: value })
-  await providersStore.validateProvider(providerId)
-}
+watch([apiKeyConfigured], async () => {
+  await speechStore.loadVoicesForProvider(providerId)
+})
 
 async function handleGenerateSpeech(input: string, voiceId: string) {
-  return preview.generateSpeech(input, voiceId)
+  const provider = await providersStore.getProviderInstance(providerId) as SpeechProvider
+  if (!provider) {
+    throw new Error('Failed to initialize speech provider')
+  }
+
+  // Get provider configuration
+  const providerConfig = providerStore.getProviderConfig(providerId)
+
+  // Get model from configuration or use default
+  const model = providerConfig.model as string | undefined || defaultModel
+
+  const options = {
+    ...providerConfig,
+  }
+
+  return await speechStore.speech(
+    provider,
+    model,
+    input,
+    voiceId,
+    options,
+  )
 }
 </script>
 
 <template>
-  <Callout
-    theme="violet"
-    :label="t('settings.pages.providers.provider.index-tts-vllm.local-service-title')"
+  <Alert
+    tone="warning"
+    :title="t('settings.pages.providers.provider.index-tts-vllm.callout_indextts2_unavailable_title')"
   >
-    {{ t('settings.pages.providers.provider.index-tts-vllm.local-service-description') }}
-  </Callout>
+    {{ t('settings.pages.providers.provider.index-tts-vllm.callout_indextts2_unavailable') }}
+  </Alert>
 
-  <SpeechProviderSettings :provider-id="providerId" :default-model="defaultModel" hide-api-key>
-    <template #voice-settings>
-      <FieldSelect
-        :model-value="language"
-        :options="languageOptions"
-        :label="t('settings.pages.providers.provider.index-tts-vllm.language')"
-        :description="t('settings.pages.providers.provider.index-tts-vllm.language-description')"
-        @update:model-value="saveLanguage"
-      />
-      <IndexTtsControls />
-    </template>
+  <SpeechProviderSettings :provider-id="providerId" :default-model="defaultModel">
+    <!-- Replace the default playground with our standalone component -->
     <template #playground>
       <SpeechPlayground
         :available-voices="availableVoices" :generate-speech="handleGenerateSpeech"
-        :api-key-configured="true"
-        :supports-ssml="false"
-        default-text="Hello! This is a test of the voice synthesis."
+        :api-key-configured="apiKeyConfigured" :use-ssml="false"
+        default-text="Hello! This is a test of the Index TTS Speech synthesis?."
       />
     </template>
   </SpeechProviderSettings>
 </template>
 
 <route lang="yaml">
-meta:
-  layout: settings
-  stageTransition:
-    name: slide
+  meta:
+    layout: settings
+    stageTransition:
+      name: slide
   </route>
