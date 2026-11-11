@@ -14,6 +14,64 @@ Hearing cancels active transcription and rejects results from its previous enabl
 The voice host also stops listening and dictation. Text chat can continue without transcribing stored recordings.
 Disabling Speech stops its producers and playback. Text generation and tool work continue until the chat turn ends.
 
+## Independent Streaming Speech
+
+Select Streaming Speech under Providers > Speech and connect the independent service at `http://127.0.0.1:18080/api/v1/`.
+Select an available Drama 3 or S2 Pro model and the discovered `default` voice in the Speech module.
+The service owns segmentation, annotation, normalization, reference audio, and model inference.
+AIRI owns provider selection, stream cancellation, PCM playback, and persisted pause and buffer controls.
+Configure an independent text API for service-owned annotation. Chat-model selection does not affect speech.
+Annotation batches accept 1 to 20 segments. The default remains 3.
+Each batch enters synthesis before annotation starts on the next batch. The last partial batch also runs.
+Enable batch synthesis to merge each batch into one audio segment, including when annotation is disabled.
+The pause applies between synthesized batches. No extra pause enters a batch.
+The text API controls can retrieve available models before saving.
+Disable **Enable speech annotation** to skip annotation, normalization, and added language, emotion, or tone tags.
+The selected synthesis mode still applies.
+This switch applies to chat and previews. Annotation settings stay saved when the switch is off.
+The provider stores its annotation URL, model, and key. An empty key uses the server key only when the annotation URL matches the server configuration.
+Keep the service running separately. No Python code or model weights are copied into AIRI.
+Upload reference audio and its exact transcript in the provider controls, then save the reference voice.
+Audio stays on the service. Previews and chat share the saved reference ID. The reference selector supports the server reference and the model voice without reference audio.
+The PCM adapter pulls only when playback requests audio. Cache feedback includes network queues and audio-clock headroom, including the active pause.
+Feedback continues every 100 ms during synthesis, so a paused producer resumes as the playback clock consumes audio.
+Segmentation controls use native wtpsplit thresholds, length limits, priors, and algorithms. The old character target is removed.
+
+Drama 3 supports up to 16 speaker bindings. Speaker 0 is the narrator and cannot be removed.
+The provider page selects saved reference voices for each speaker. S2 uses the single reference setting.
+Text can select a bound speaker with `<|speaker:1|>`. Independent service annotation handles the speech text.
+Reference controls list saved recordings and save a readable name with each recording.
+
+## NovelAI providers
+
+Autonomous artistry shows progress and reports generation, saving, and display errors in a notification.
+Its `Autonomous artistry` IO span records the score, threshold, generation start, final phase, and failure message.
+This distinguishes waiting for the shared generation slot from a provider failure or a display failure.
+
+NovelAI supports chat and desktop image generation with a Persistent API Token.
+Configure chat through Providers and select it in the Consciousness module.
+
+The chat adapter decodes native token responses with the GLM-4.6 tokenizer.
+It translates explicit text tool requests into xsAI tool calls. Ordinary JSON examples remain chat text.
+Tool requests can follow dialogue on a new line. The adapter hides their JSON from chat and speech during streaming.
+Text after a tool request is discarded. The next model response uses the actual tool result before reporting success.
+Tool-result continuations identify completed actions explicitly, so NovelAI does not repeat a successful request.
+Assistant-targeted autonomous drawing skips replies that already invoked the image journal tool.
+The adapter also accepts tool objects with one JSON-string escape layer. Argument text keeps its quotes and backslashes.
+Tool execution takes priority over character dialogue and stage tokens. Image requests require the image tool before a completion claim.
+Image bytes stay in tool results for display and are omitted from the text model's follow-up request.
+Chat, drawing analysis, and desktop image jobs share one generation lock across provider instances and same-origin windows.
+Image invokers hold the slot until Electron returns the completed image. Text requests hold it until their response body ends.
+Queued text requests respect cancellation.
+Speech annotation uses the independently configured service text API and does not enter the AIRI chat queue.
+
+Configure image generation under Providers > Artistry > NovelAI Diffusion.
+The settings offer V3, V4, V4.5, and V5 model IDs, plus a custom ID field.
+The positive prompt prefix precedes each drawing description. Negative prompts combine with request-specific negatives.
+Both fields start empty and support local persistence and cross-window synchronization.
+The character editor can select NovelAI as an Artistry override.
+Image-to-image and voice cloning are not exposed.
+
 ## Experimental features
 
 Register flags in `libs/feature-flags.ts`. Read their state through `useFeatureFlagsStore().isEnabled(key)`.
@@ -87,6 +145,8 @@ Consumers subscribe to the microphone input with their own abort signal. The las
 - `createVoiceRephrasePlugin` rewrites final transcripts with a chat model through a checked transcript patch. The raw text stays in the transcript history. Each segment gets its own rewrite, so segment boundaries stay for later speaker labels. A reply with another segment count leaves the text unchanged.
 - `createVoiceEndJudgePlugin` ends a paused input early when a chat model reads its transcript as a finished message. The model is the rephrase model, or the chat model when no rephrase provider is set.
 - `createSpeakerEvidencePlugin` compares each automatic input with the owner's voiceprint while Speaker recognition is on. It writes the mean cosine of the speech as speaker evidence, and the IO trace of the input records it. It never changes an input, and the chat prompt does not include it.
+- `createSpeakerGatePlugin` requires that evidence before automatic input becomes a draft or chat message. The owner's mean cosine must reach 0.5. Missing evidence cancels the input, including while the model loads or fails. This initial threshold needs calibration with real microphone recordings. Manual controls bypass the gate. Recognition settings apply when each input starts. The gate filters complete inputs, so mixed voices inside one input are not separated.
+- `SpeakerTranscriber` also delays the transcription provider until the input first passes local speaker recognition. It replays the retained audio, then streams new audio. Before approval, a rolling buffer retains the most recent five seconds. Buffer duration is not a recognition deadline. Delayed matching scores can still open transcription while capture continues. Unmatched inputs produce no transcript and invoke no transcription provider. Final speaker verification still applies to the complete input. Manual inputs and inputs with recognition disabled transcribe immediately.
 
 A pause of 1.2 seconds can end an input. With the end judge on, which is the default, the voice activity silence limit grows by 3 seconds.
 The judge then ends a finished message at the pause, and an unfinished one waits for the speaker to continue.
@@ -166,6 +226,10 @@ The tracker enrolls the saved voiceprint as speaker 0, and follows each change o
 
 `useVoiceprintStore` keeps the voiceprint of the device owner in local storage. Only one person can enroll.
 `useVoiceEnrollment` records one enrollment from the speech input of the calling window, keeps only the speech that Silero VAD finds, and saves the voiceprint.
+`useVoiceprintTest` uses the same bounded recording without saving a voiceprint or sending a chat message.
+It compares at least five seconds of speech with the saved voiceprint, using the live model, window sizes, and threshold.
+The settings test removes pauses before comparison. Live input scores only windows with at least half speech, so the scores can differ.
+The test releases its capture lease after recording and disposes its temporary model Worker after comparison.
 The enrollment belongs to the calling component, so it ends when the component unmounts.
 While it records, it holds a capture lease (`holdCaptureLease`). The voice host follows leases with `useVoiceCaptureLeaseStore`.
 While a lease holds, the host begins no input and records no voice message. A new lease cancels the active input and keeps a voice message that records as a draft.
@@ -399,3 +463,13 @@ The default pack contains twelve generated chibi reactions of AIRI's official bl
 See [artwork provenance](src/assets/stickers/README.md) for references, exact prompts, and inspection notes.
 These are static assets. No runtime image-generation dependency is included.
 The four development-only Fluent Emoji images are removed. No old-ID migration is included.
+
+
+## Speech provider boundaries
+
+`src/libs/providers/speech/output.ts` selects the Streaming Speech adapter for chat.
+The Streaming Speech provider page owns its controls and preview. Other speech providers use upstream behavior.
+The independent service owns segmentation, annotation, normalization, reference recordings, and inference.
+The AIRI adapter owns protocol framing, audio-clock feedback, playback buffering, and cancellation.
+Speech annotation always runs on the service. The AIRI adapter never reads the character's chat configuration.
+Core speech output and Markdown processing use upstream implementation `d67487067` without local provider hooks.

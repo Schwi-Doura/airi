@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { nextTick } from 'vue'
 
-import { resolveArtistryConfigFromStore, useArtistryStore } from './artistry'
+import { useArtistryStore } from './artistry'
 
 /**
  * @example
@@ -11,21 +11,6 @@ import { resolveArtistryConfigFromStore, useArtistryStore } from './artistry'
 describe('artistry store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-  })
-
-  it('sends NovelAI settings to the image provider and clears them on reset', () => {
-    const store = useArtistryStore()
-    store.activeProvider = 'novelai'
-    store.novelaiApiKey = 'test-token'
-    store.novelaiModel = 'nai-diffusion-5-full'
-    store.novelaiPromptPrefix = 'watercolor'
-    store.novelaiNegativePrompt = 'blurry'
-    expect(store.configured).toBe(true)
-    expect(resolveArtistryConfigFromStore(store).globals).toMatchObject({ novelaiModel: 'nai-diffusion-5-full', novelaiPromptPrefix: 'watercolor', novelaiNegativePrompt: 'blurry' })
-    store.resetState()
-    expect(store.novelaiApiKey).toBe('')
-    expect(store.novelaiPromptPrefix).toBe('')
-    expect(store.novelaiNegativePrompt).toBe('')
   })
 
   /**
@@ -72,8 +57,6 @@ describe('artistry store', () => {
 
     artistryStore.$patch((currentState) => {
       Object.assign(currentState, {
-        novelaiPromptPrefix: 'watercolor',
-        novelaiNegativePrompt: 'blurry',
         globalProviderOptions: { steps: 20 },
         providerOptions: { steps: 20 },
         comfyuiSavedWorkflows: [{

@@ -73,7 +73,7 @@ export interface WidgetsWindowManager {
    */
   openWindow: (params?: { id?: string }) => Promise<void>
   /**
-   * Creates a widget instance and renders it in its own window.
+   * Shows a widget, reusing its window when the id and component match.
    *
    * Use when:
    * - A renderer or tool wants to spawn a new overlay widget
@@ -564,7 +564,7 @@ export function setupWidgetsWindowManager(params: {
   }
 
   /**
-   * Creates a widget instance and renders it in its own window.
+   * Shows a widget, reusing its window when the id and component match.
    *
    * Use when:
    * - A renderer or tool wants to spawn overlay content
@@ -577,10 +577,6 @@ export function setupWidgetsWindowManager(params: {
    */
   async function pushWidget(payload: WidgetsAddPayload): Promise<string> {
     const id = payload.id ?? Math.random().toString(36).slice(2, 10)
-    if (widgetRecords.has(id))
-      destroyWidget(id)
-
-    prepareWidgetWindow({ id })
     const snapshot: WidgetSnapshot = {
       id,
       componentName: payload.componentName,
@@ -590,6 +586,16 @@ export function setupWidgetsWindowManager(params: {
       windowSize: resolveWindowSizeFromPayload(payload),
       ttlMs: payload.ttlMs ?? 0,
     }
+    const existing = widgetRecords.get(id)
+    if (existing?.componentName === snapshot.componentName) {
+      await updateWidget(snapshot)
+      await openWindow({ id })
+      return id
+    }
+    if (existing)
+      destroyWidget(id)
+
+    prepareWidgetWindow({ id })
     createRecord(snapshot)
     const windowContext = windowContexts.get(id)!
     await showWindowWithRoute(`${defaultRoute}?id=${id}`, windowContext, snapshot)

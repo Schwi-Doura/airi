@@ -1145,6 +1145,10 @@ export const useChatStore = defineStore('chat', () => {
     onAssistantTurnReady: ({ sessionId, messageText, sessionMessages }) => {
       if (!isOwnerTurn(sessionId, sessionMessages))
         return
+      // Image tools own explicit requests, including recovery. Autonomous drawing must not add a second image.
+      const reply = chatSession.getSessionMessages(sessionId).at(-1)
+      if (reply?.role === 'assistant' && reply.slices.some(slice => slice.type === 'tool-call' && slice.toolCall.toolName === 'image_journal'))
+        return
       const artistry = sessionCard(sessionId)?.extensions?.airi?.modules?.artistry
       if (artistry?.autonomousEnabled && artistry?.autonomousTarget === 'assistant')
         void artistryAutonomousStore.runArtistTask(messageText, toProviderHistory(sessionMessages))

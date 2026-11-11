@@ -5,6 +5,7 @@ import type { JsonSchema } from 'xsschema'
 import { defineInvoke } from '@moeru/eventa'
 import { createContext } from '@moeru/eventa/adapters/electron/renderer'
 import { artistryGenerateHeadless, errorMessageFromValue } from '@proj-airi/stage-shared'
+import { runGeneration } from '@proj-airi/stage-ui/libs/providers/providers/novelai/generation-fetch'
 import { useBackgroundStore } from '@proj-airi/stage-ui/stores/background'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { resolveArtistryConfigFromStore, useArtistryStore } from '@proj-airi/stage-ui/stores/modules/artistry'
@@ -18,8 +19,11 @@ export function getArtistryConfig(): ResolvedArtistryConfig {
 
 function createInvokers() {
   const { context } = createContext(window.electron.ipcRenderer)
+  const generateHeadless = defineInvoke(context, artistryGenerateHeadless)
   return {
-    generateHeadless: defineInvoke(context, artistryGenerateHeadless),
+    generateHeadless: (...args: Parameters<typeof generateHeadless>) => args[0].provider === 'novelai'
+      ? runGeneration(() => generateHeadless(...args))
+      : generateHeadless(...args),
     addWidget: defineInvoke(context, widgetsAdd),
   }
 }
@@ -141,6 +145,7 @@ async function executeCreateImageJournalEntry(params: { prompt?: string, title?:
     if (mode === 'widget' || mode === 'bg_widget') {
       try {
         await addWidget({
+          id: `artistry-result:${cardStore.activeCardId}`,
           componentName: 'artistry',
           componentProps: {
             status: 'done',

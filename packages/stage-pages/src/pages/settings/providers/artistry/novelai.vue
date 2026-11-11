@@ -56,7 +56,7 @@ const selectedModel = computed({
     />
     <FieldSelect
       v-model="selectedModel"
-      :label="t('settings.pages.providers.provider.novelai-speech.model')"
+      :label="t('settings.pages.providers.provider.novelai.image-model')"
       :description="t('settings.pages.providers.provider.novelai.image-model-description')"
       :options="modelOptions"
     />

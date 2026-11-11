@@ -52,12 +52,12 @@ import { providerVolcengineCodingPlan } from './cloud/volcengine-coding-plan'
 import { providerXAI } from './cloud/xai'
 import { providerZai } from './cloud/zai'
 import { providerBrowserWebSpeechApi } from './local/browser-web-speech-api'
-import { providerCosyVoice3 } from './local/cosyvoice3'
 import { providerIndexTtsVllm } from './local/index-tts-vllm'
 import { providerLmStudio } from './local/lm-studio'
 import { providerOllama } from './local/ollama'
 import { providerPlayer2Speech } from './local/player2-speech'
 import { providerSpeechNoop } from './local/speech-noop'
+import { providerStreamingSpeech } from './local/streaming-speech'
 import { providerAivisSpeech, providerVoicevox } from './local/voicevox'
 
 /**
@@ -139,12 +139,12 @@ export const portableProviderDefinitions = eraseProviderDefinitions(
   providerXAI,
   providerZai,
   providerBrowserWebSpeechApi,
-  providerCosyVoice3,
   providerIndexTtsVllm,
   providerLmStudio,
   providerOllama,
   providerPlayer2Speech,
   providerSpeechNoop,
+  providerStreamingSpeech,
   providerAivisSpeech,
   providerVoicevox,
 )

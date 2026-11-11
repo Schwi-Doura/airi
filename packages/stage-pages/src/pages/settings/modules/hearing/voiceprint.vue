@@ -2,7 +2,9 @@
 import { speakerModel } from '@proj-airi/stage-shared/speaker-model'
 import { useModelAssetFailureMessage, useModelAssetStatus } from '@proj-airi/stage-ui/composables/use-model-asset-status'
 import { useVoiceEnrollment } from '@proj-airi/stage-ui/composables/use-voice-enrollment'
+import { useVoiceprintTest } from '@proj-airi/stage-ui/composables/use-voiceprint-test'
 import { isSherpawModelBundled } from '@proj-airi/stage-ui/libs/providers/providers/sherpaw/model-assets'
+import { OWNER_VOICE_THRESHOLD } from '@proj-airi/stage-ui/libs/voice/speaker-recognition'
 import { MIN_ENROLLMENT_SPEECH_SECONDS } from '@proj-airi/stage-ui/libs/voice/voice-enrollment'
 import { useHearingStore } from '@proj-airi/stage-ui/stores/modules/hearing'
 import { useVoiceprintStore } from '@proj-airi/stage-ui/stores/voiceprint'
@@ -30,8 +32,33 @@ watch(() => enrollment.value.phase, (phase) => {
 })
 const modelFailure = computed(() => modelRequested.value ? models.value.find(model => model.id === speakerModel.id)?.error : undefined)
 
+const { state: test, score: testScore, busy: testBusy, begin: beginTest, finish: finishTest, cancel: cancelTest } = useVoiceprintTest()
+
 const sentences = computed(() => [1, 2, 3].map(index => t(`settings.pages.modules.hearing.voiceprint.sentence-${index}`)))
 const speechSeconds = computed(() => enrollment.value.phase === 'idle' ? 0 : enrollment.value.speechSeconds)
+const testSeconds = computed(() => test.value.phase === 'idle' ? 0 : test.value.speechSeconds)
+
+const testResult = computed(() => {
+  const value = test.value
+  switch (value.phase) {
+    case 'enrolled': {
+      const passed = testScore.value !== undefined && testScore.value >= OWNER_VOICE_THRESHOLD
+      const key = passed ? 'passed' : 'rejected'
+      return { tone: passed ? 'green' : 'orange', text: t(`settings.pages.modules.hearing.voiceprint.test.${key}`, {
+        score: testScore.value?.toFixed(3) ?? t('settings.pages.modules.hearing.voiceprint.test.no-score'),
+        threshold: OWNER_VOICE_THRESHOLD,
+      }) } as const
+    }
+    case 'failed':
+      return { tone: 'orange', text: value.failure === 'too-short'
+        ? t('settings.pages.modules.hearing.voiceprint.test.too-short', { min: MIN_ENROLLMENT_SPEECH_SECONDS })
+        : t('settings.pages.modules.hearing.voiceprint.test.error', { error: value.error ?? '' }) } as const
+    case 'cancelled':
+      return { tone: 'neutral', text: t('settings.pages.modules.hearing.voiceprint.test.cancelled') } as const
+    default:
+      return undefined
+  }
+})
 
 /** `none`: nothing saved. `enrolled`: a usable voiceprint. `outdated`: another model revision computed it. */
 const status = computed(() => {
@@ -142,6 +169,7 @@ const resultClasses = {
             variant="primary"
             icon="i-solar:microphone-3-bold-duotone"
             :label="voiceprints.record ? t('settings.pages.modules.hearing.voiceprint.again') : t('settings.pages.modules.hearing.voiceprint.start')"
+            :disabled="testBusy"
             @click="begin()"
           />
           <DoubleCheckButton v-if="voiceprints.record" data-testid="voiceprint-delete" @confirm="voiceprints.remove()">
@@ -159,6 +187,51 @@ const resultClasses = {
       <p v-if="!voiceprints.record && !modelBundled" :class="['text-xs', 'text-neutral-400 dark:text-neutral-500']">
         {{ t('settings.pages.modules.hearing.voiceprint.download') }}
       </p>
+    </SettingsCard>
+
+    <SettingsCard>
+      <p :class="['font-medium', 'text-neutral-700 dark:text-neutral-200']">
+        {{ t('settings.pages.modules.hearing.voiceprint.test.title') }}
+      </p>
+      <p :class="['text-sm', 'text-neutral-500 dark:text-neutral-400']">
+        {{ t('settings.pages.modules.hearing.voiceprint.test.description', { min: MIN_ENROLLMENT_SPEECH_SECONDS, threshold: OWNER_VOICE_THRESHOLD }) }}
+      </p>
+      <div v-if="testBusy" :class="['flex flex-col gap-2']">
+        <Progress :progress="Math.min(100, testSeconds / MIN_ENROLLMENT_SPEECH_SECONDS * 100)" />
+        <p role="status" :class="['text-sm', 'text-neutral-500 dark:text-neutral-400']">
+          {{ test.phase === 'enrolling'
+            ? t('settings.pages.modules.hearing.voiceprint.test.comparing')
+            : t('settings.pages.modules.hearing.voiceprint.test.progress', { seconds: testSeconds.toFixed(1), min: MIN_ENROLLMENT_SPEECH_SECONDS }) }}
+        </p>
+      </div>
+      <p
+        v-if="testResult"
+        role="status"
+        data-testid="voiceprint-test-result"
+        :class="['text-sm', resultClasses[testResult.tone]]"
+      >
+        {{ testResult.text }}
+      </p>
+      <div :class="['flex flex-wrap items-center gap-2']">
+        <template v-if="testBusy">
+          <Button
+            data-testid="voiceprint-test-finish"
+            variant="primary"
+            :label="t('settings.pages.modules.hearing.voiceprint.test.finish')"
+            :disabled="test.phase !== 'recording' || testSeconds < MIN_ENROLLMENT_SPEECH_SECONDS"
+            @click="finishTest()"
+          />
+          <Button :label="t('settings.pages.modules.hearing.voiceprint.cancel')" @click="cancelTest()" />
+        </template>
+        <Button
+          v-else
+          data-testid="voiceprint-test-start"
+          icon="i-solar:microphone-3-bold-duotone"
+          :label="t('settings.pages.modules.hearing.voiceprint.test.start')"
+          :disabled="!voiceprints.voiceprint || busy"
+          @click="beginTest()"
+        />
+      </div>
     </SettingsCard>
 
     <SettingsCard>

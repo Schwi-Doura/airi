@@ -1,14 +1,18 @@
+/** Holds the NovelAI account slot until text or image generation completes. */
+export async function runGeneration<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  return navigator.locks.request('airi:novelai:text-generation', { signal }, operation)
+}
+
 /**
- * Shares one NovelAI text-generation slot across provider instances and same-origin windows.
+ * Shares one NovelAI generation slot across provider instances and same-origin windows.
  * Requires Web Locks. Consumers must read or cancel response bodies to release the slot.
  */
 export function createGenerationFetch(fetcher: typeof fetch = (input, init) => globalThis.fetch(input, init)): typeof fetch {
   return (input, init) => {
     const ready = Promise.withResolvers<Response>()
     const signal = init?.signal ?? undefined
-    // The subscription has one text-generation slot. Models, renderer windows,
-    // and cached provider instances must not acquire independent slots.
-    void navigator.locks.request('airi:novelai:text-generation', { signal }, async () => {
+    // Keep the account slot until the response body ends, rather than releasing it when headers arrive.
+    void runGeneration(async () => {
       try {
         const response = await fetcher(input, init)
         if (!response.ok || !response.body) {
@@ -61,7 +65,7 @@ export function createGenerationFetch(fetcher: typeof fetch = (input, init) => g
       catch (cause) {
         ready.reject(cause)
       }
-    }).catch(ready.reject)
+    }, signal).catch(ready.reject)
     return ready.promise
   }
 }

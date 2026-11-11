@@ -19,6 +19,7 @@ import { x } from 'xastscript'
 import { injectKeyPiniaSynced } from '../../libs/pinia/synced-context'
 import { getDefinedProvider } from '../../libs/providers/providers'
 import { OFFICIAL_SPEECH_PROVIDER_ID, OFFICIAL_SPEECH_STREAMING_PROVIDER_ID, pickOfficialSpeechVoice, picksSpeechVoiceAutomatically } from '../../libs/providers/providers/official'
+import { getSpeechOutputAdapter } from '../../libs/providers/speech/output'
 import { streamSpeech } from '../../libs/speech/streaming-pipeline'
 import { useProviderConfigStore } from '../providers/config'
 import { useProviderStore } from '../providers/provider'
@@ -636,6 +637,9 @@ export const useSpeechStore = defineStore('speech', () => {
       return { ...output, synthesize: async () => null }
     const synthesisSignal = synthesis.signal
     const providerId = selection.provider
+    const adapter = getSpeechOutputAdapter(providerId)
+    if (adapter)
+      return { ...output, ...adapter({ config: providerStore.getProviderConfig(providerId) ?? {}, model: selection.model, voice: selection.voice_id, nowMs: () => output.playback.nowMs(), signal: synthesisSignal }) }
     const config = structuredClone(toRaw(providerStore.getProviderConfig(providerId) ?? {}))
     const selectedVoice = availableVoices.value[providerId]?.find(voice => voice.id === selection.voice_id)
     const voice = selectedVoice ? structuredClone(toRaw(selectedVoice)) : undefined

@@ -2,14 +2,21 @@ import type { Message } from '@xsai/shared-chat'
 
 import { defineInvoke, defineInvokeEventa } from '@moeru/eventa'
 import { createContext } from '@moeru/eventa/adapters/electron/renderer'
+import { errorMessageFrom } from '@moeru/std'
 import { chatMessagesToTurns, streamFrom } from '@proj-airi/core-agent'
 import { artistryGenerateHeadless } from '@proj-airi/stage-shared'
+import { beginSpan } from '@proj-airi/trace-kit'
+import { AgentTracks } from '@proj-airi/trace-kit/agent'
+import { VoiceIdKeys } from '@proj-airi/trace-kit/voice'
 import { cloneDeep } from 'es-toolkit'
 import { defineStore } from 'pinia'
 import { ref, toRaw } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { toast } from 'vue-sonner'
 
 import { useAnalytics } from '../../composables/use-analytics'
+import { getTraceSink } from '../../composables/use-trace'
+import { runGeneration } from '../../libs/providers/providers/novelai/generation-fetch'
 import { useBackgroundStore } from '../background'
 import { useChatSessionStore } from '../chat/session-store'
 import { useProviderStore } from '../providers/provider'
@@ -19,6 +26,7 @@ import { useArtistryStore } from './artistry'
 const artistLog = import.meta.env.DEV ? console.info.bind(console, '[AutonomousArtist]') : () => {}
 
 export const useAutonomousArtistryStore = defineStore('artistry-autonomous', () => {
+  const { t } = useI18n()
   const cardStore = useAiriCardStore()
   const backgroundStore = useBackgroundStore()
   const artistryStore = useArtistryStore()
@@ -33,11 +41,12 @@ export const useAutonomousArtistryStore = defineStore('artistry-autonomous', () 
   const widgetsAdd = defineInvokeEventa<string | undefined, any>('eventa:invoke:electron:windows:widgets:add')
 
   const getGenerateHeadless = () => {
-    const win = window as any
+    const win = window as Window & { electron?: { ipcRenderer: Parameters<typeof createContext>[0] } }
     if (typeof window !== 'undefined' && win.electron?.ipcRenderer) {
-      const { context } = createContext(win.electron.ipcRenderer as any)
+      const { context } = createContext(win.electron.ipcRenderer)
+      const generate = defineInvoke(context, artistryGenerateHeadless)
       return {
-        generate: defineInvoke(context, artistryGenerateHeadless),
+        generate,
         addWidget: defineInvoke(context, widgetsAdd),
       }
     }
@@ -72,6 +81,21 @@ export const useAutonomousArtistryStore = defineStore('artistry-autonomous', () 
     const threshold = artistry.autonomousThreshold ?? 70
 
     isProcessing.value = true
+    const span = beginSpan(getTraceSink(), {
+      track: AgentTracks.Decision,
+      name: 'Autonomous artistry',
+      ids: { [VoiceIdKeys.Conversation]: targetSessionId },
+      attrs: {
+        'ai.moeru.airi.io.artistry.phase': 'analysis',
+        'ai.moeru.airi.io.artistry.threshold': threshold,
+      },
+    })
+    let generationToast: string | number | undefined
+    const recordPhase = (phase: string) => {
+      span.update({ 'ai.moeru.airi.io.artistry.phase': phase })
+      span.instant('Artistry progress', { 'ai.moeru.airi.io.artistry.phase': phase })
+    }
+    recordPhase('analysis')
     artistLog('Starting analysis task...', { threshold, cardId, target })
 
     try {
@@ -208,6 +232,7 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
       })
 
       const thresholdMet = (analysis.intensity ?? 0) >= threshold
+      span.update({ 'ai.moeru.airi.io.artistry.intensity': analysis.intensity ?? 0 })
       toast('Director\'s Decision', {
         description: `${thresholdMet ? '✅' : '❌'} Grade: ${analysis.intensity}/${threshold}\nReason: ${analysis.reasoning?.substring(0, 130)}${analysis.reasoning?.length > 130 ? '...' : ''}`,
         duration: 7000,
@@ -219,6 +244,7 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
 
         const invoker = getGenerateHeadless()
         if (!invoker) {
+          recordPhase('unavailable')
           artistLog('IPC Invoker not available (non-electron environment). Skipping generation.')
           return
         }
@@ -237,16 +263,28 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
 
         // Safety: ensure payload is a plain object for IPC serialization
         const plainPayload = JSON.parse(JSON.stringify(toRaw(generationPayload)))
-        const result = await invokers.generate(plainPayload)
+        generationToast = toast.loading(t('settings.pages.modules.artistry.autonomous.pending'))
+        recordPhase('waiting-for-generation-slot')
+        const generate = () => {
+          recordPhase('generating')
+          span.instant('artistry.generation.started')
+          return invokers.generate(plainPayload)
+        }
+        const result = rendering.provider === 'novelai'
+          ? await runGeneration(generate)
+          : await generate()
 
         if (result.error) {
           throw new Error(result.error)
         }
+        if (!result.base64 && !result.imageUrl)
+          throw new Error(t('settings.pages.modules.artistry.autonomous.no-image'))
 
         artistLog('Headless Generation Success!', { hasUrl: !!result.imageUrl, hasBase64: !!result.base64 })
 
         // 4. Save to journal
         if (result.base64 || result.imageUrl) {
+          recordPhase('saving-image')
           let blob: Blob
           if (result.base64) {
             const response = await fetch(result.base64)
@@ -262,6 +300,8 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
 
           // 5. Route based on spawnMode
           const spawnMode = artistry.spawnMode || 'bg_widget'
+          recordPhase('displaying-image')
+          span.update({ 'ai.moeru.airi.io.artistry.display_mode': spawnMode })
           artistLog(`Routing image with mode: ${spawnMode}`)
 
           // Read current card data after generation to preserve concurrent settings edits.
@@ -303,6 +343,7 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
             case 'widget':
               try {
                 await invokers.addWidget({
+                  id: `artistry-result:${cardId}`,
                   componentName: 'artistry',
                   componentProps: {
                     status: 'done',
@@ -318,6 +359,7 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
               }
               catch (widgetErr) {
                 console.warn('[AutonomousArtist] Failed to spawn Result widget', widgetErr)
+                throw widgetErr
               }
               break
 
@@ -340,6 +382,7 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
 
               try {
                 await invokers.addWidget({
+                  id: `artistry-result:${cardId}`,
                   componentName: 'artistry',
                   componentProps: {
                     status: 'done',
@@ -355,19 +398,31 @@ LATEST ${target === 'assistant' ? 'COMPANION RESPONSE' : 'USER INPUT'}:
               }
               catch (widgetErr) {
                 console.warn('[AutonomousArtist] Failed to spawn Result widget', widgetErr)
+                throw widgetErr
               }
               break
           }
+          recordPhase('completed')
+          toast.success(t('settings.pages.modules.artistry.autonomous.completed'), { id: generationToast })
+          generationToast = undefined
         }
       }
       else {
+        recordPhase('below-threshold')
         artistLog(`Intensity (${analysis.intensity}) below threshold (${threshold}). No action taken.`)
       }
     }
     catch (err) {
+      const message = errorMessageFrom(err) ?? t('settings.pages.modules.artistry.autonomous.failed')
+      span.end({ status: 'error', message })
+      toast.error(t('settings.pages.modules.artistry.autonomous.failed'), { id: generationToast, description: message, duration: 12000 })
+      generationToast = undefined
       artistLog('Task failed with error:', err)
     }
     finally {
+      if (generationToast !== undefined)
+        toast.dismiss(generationToast)
+      span.end()
       isProcessing.value = false
     }
   }

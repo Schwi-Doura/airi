@@ -8,6 +8,13 @@ Shared character behavior belongs in `packages/stage-ui`. Use `stage-web` for br
 From the repository root, run `pnpm install`, then `pnpm dev:tamagotchi`.
 Run `pnpm -F @proj-airi/stage-tamagotchi build` to build the app.
 
+## Drawing windows
+
+Automatic drawing and the image journal tool reuse one result window per character.
+Each new image replaces that window's content and remains saved in the journal.
+Closing the result window lets the next drawing open it again.
+Widget requests with the same explicit id and component update the existing window. Requests without an id create independent windows.
+
 ## Local model files
 
 Sherpaw downloads remote model files into the app user data directory. The main

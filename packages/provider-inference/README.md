@@ -1,15 +1,5 @@
 # Provider Inference
 
-CosyVoice3 uses the official native FastAPI endpoints with the ordinary `Fun-CosyVoice3-0.5B-2512` model.
-The server must load `llm.pt`. Model selection in AIRI does not switch server weights.
-The adapter synthesizes complete sentences sequentially, preserves clone settings, and joins PCM16 output before adding one 24 kHz WAV header.
-It preserves request cancellation and rejects empty or incomplete audio. It does not request Chat annotations.
-See [the setup guide](../../docs/ai/cosyvoice3-zh-cn.md) for deployment and configuration.
-
-IndexTTS exports `indexTtsSettingsSchema` for shared chat and preview settings.
-Its adapter converts speed to `duration_factor`, maps emotion presets to native vectors, and forwards each span's `pause_after_ms`.
-Original expression and zero strength omit the vector. The local API validates native ranges before GPU inference.
-
 `@proj-airi/provider-inference` owns runtime-neutral AIRI provider definitions.
 
 Use this package to list built-in providers, create provider configuration schemas, and create provider instances. The package runs in Node.js and Browser runtimes.
@@ -38,22 +28,27 @@ Use `@proj-airi/stage-ui` for saved provider configuration, Vue settings views, 
 
 ## Verify
 
-### Local IndexTTS speech
+### Independent Streaming Speech service
 
-The `index-tts-vllm` provider connects to a local IndexTTS-2.5 service.
-The service must expose `audio/voices` and `audio/speech` under its configured Base URL.
-The speech adapter forwards the selected language in the request body.
-Use `JA` for Japanese, including sentences that contain only kanji.
-The service owns reference recordings and voice cloning. No API key is required.
+The `streaming-speech` provider connects to the independently maintained speech demo through API v1.
+Use `http://127.0.0.1:18080/api/v1/` as the local Base URL.
+The service owns SaT, annotation prompts and validation, WeText, S2 inference, voice references, and logs.
+Configure an independent text API for annotation. Credentials apply to one connection without changing service files.
+The service sends annotation requests, validates replies, and retries invalid annotation. AIRI never invokes its chat model for speech.
 
-Run the package checks from the workspace root:
+The API exposes `health`, `models`, `voices`, and a `speech/stream` WebSocket beneath the Base URL.
+The socket accepts text chunks and returns sentence-framed mono PCM16 at 44100 Hz.
+`StreamingSpeechClient` validates responses, inserts server-declared pauses, and cancels sockets when their response ends.
+Settings previews collect the same stream into one WAV. Automatic speech uses the stage-ui PCM adapter.
+Keep the independent service running before validating or selecting this provider.
+Reference uploads use the service's `references` endpoint. AIRI persists only `referenceId`, which applies to previews and chat.
+The service validates audio, stores immutable profiles, and caches encoded prompts.
+Use reference ID `none` for the model voice without a recording. An empty reference ID selects the service reference, if saved.
+Batch synthesis sends `merge_for_synthesis` and consumes `segments_merged` events. Pauses separate output batches.
+Annotation always runs in batches. The removed `annotation_schedule` field never enters the request.
 
-```text
-pnpm -F @proj-airi/provider-inference typecheck
-pnpm -F @proj-airi/provider-inference test:node
-pnpm -F @proj-airi/provider-inference test:browser
-pnpm -F @proj-airi/provider-inference build
-```
+The service API contract and setup instructions live in that project's `API.md` and `README.md`.
+
 
 ## Generation protocols
 

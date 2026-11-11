@@ -13,7 +13,7 @@ import type {
   providerBrowserLocalAudioSpeech,
   providerBrowserLocalAudioTranscription,
 } from './local-audio'
-import type { providerNovelAI, providerNovelAISpeech } from './novelai'
+import type { providerNovelAI } from './novelai'
 import type { providerNvidia } from './nvidia'
 import type {
   providerOfficialChat,
@@ -39,7 +39,6 @@ type StageOnlyProviderId
     | typeof providerKokoroLocal.id
     | typeof providerNvidia.id
     | typeof providerNovelAI.id
-    | typeof providerNovelAISpeech.id
     | typeof providerOfficialChat.id
     | typeof providerOfficialSpeech.id
     | typeof providerOfficialSpeechStreaming.id

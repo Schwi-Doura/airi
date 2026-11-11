@@ -21,6 +21,8 @@ import { useVoiceEndJudge } from '../composables/voice-end-judge'
 import { createVoiceInputTracer } from '../composables/voice-input-trace'
 import { useVoiceRephrase } from '../composables/voice-rephrase'
 import { createSpeakerEvidencePlugin } from '../libs/voice/speaker-evidence-plugin'
+import { createSpeakerGatePlugin } from '../libs/voice/speaker-gate-plugin'
+import { SpeakerTranscriber } from '../libs/voice/speaker-transcriber'
 import { createSpeechOutputLevelPlugin } from '../libs/voice/speech-output-level-plugin'
 import { createVoiceActivityPlugin } from '../libs/voice/voice-activity-plugin'
 import { createVoiceEndJudgePlugin } from '../libs/voice/voice-end-judge-plugin'
@@ -106,12 +108,17 @@ export const useVoiceStore = defineStore('voice', () => {
    * The `end` command returns the text and removes the entry. A settled attempt removes it too.
    */
   const composerInputs = new Map<string, string | undefined>()
+  const transcribers = new Map<string, SpeakerTranscriber>()
   let presentedInput: { requestId: string, attempt: SpeechInputAttempt } | undefined
 
   const inputTracer = createVoiceInputTracer({ speechThreshold: DEFAULT_SPEECH_THRESHOLD })
   const { controller, state, snapshot: transcript, error } = useVoiceController({
-    // The recognition span belongs to its input, which can still finalize after the next input began.
-    transcriber: ({ inputId, sessionId }) => hearing.createTranscriber(undefined, { ids: { [VoiceIdKeys.Input]: inputId, [VoiceIdKeys.Conversation]: sessionId } }),
+    transcriber: ({ inputId }) => {
+      const transcriber = transcribers.get(inputId)
+      if (!transcriber)
+        throw new Error('Input transcription admission is unavailable')
+      return transcriber
+    },
     speech: (turn) => {
       if (!output)
         throw new Error('Voice output host is not connected')
@@ -135,6 +142,10 @@ export const useVoiceStore = defineStore('voice', () => {
     },
     onError: event => report(event.error),
   })
+  controller.use(
+    createSpeakerGatePlugin({ required: inputId => transcribers.get(inputId)!.required }),
+    { grants: ['input-control', 'cancel-input'], onError: event => report(event.error) },
+  )
   const { rephrase } = useVoiceRephrase()
   controller.use(
     createVoiceRephrasePlugin({ enabled: () => hearing.rephraseEnabled, rephrase, timeoutMs: VOICE_REPHRASE_TIMEOUT_MS }),
@@ -158,6 +169,11 @@ export const useVoiceStore = defineStore('voice', () => {
   }
 
   controller.onInput((attempt) => {
+    transcribers.set(attempt.id, new SpeakerTranscriber(
+      () => hearing.createTranscriber(undefined, { ids: { [VoiceIdKeys.Input]: attempt.id, [VoiceIdKeys.Conversation]: attempt.sessionId } }),
+      attempt.cause !== 'control' && hearing.speakerRecognitionEnabled,
+    ))
+    void attempt.done.then(() => transcribers.delete(attempt.id))
     presentedInput = { requestId: attempt.id, attempt }
     if (callActive.value)
       callInputs.add(attempt.id)
@@ -585,6 +601,8 @@ export const useVoiceStore = defineStore('voice', () => {
       input: () => controller.activeInput,
       update: (update) => {
         const result = controller.updateSpeakerEvidence(update.inputId, { range: update.range, value: update.value })
+        if (result.status === 'applied')
+          transcribers.get(update.inputId)?.observe(update.value)
         inputTracer.speakerEvidence(update, result)
       },
     })

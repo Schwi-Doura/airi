@@ -1,5 +1,3 @@
-export { default as CosyVoice3Controls } from './cosyvoice3-controls.vue'
-export { default as IndexTtsControls } from './index-tts-controls.vue'
 export { default as ProviderAccountIdInput } from './provider-account-id-input.vue'
 export { default as ProviderAdvancedSettings } from './provider-advanced-settings.vue'
 export { default as ProviderApiKeyInput } from './provider-api-key-input.vue'
@@ -15,6 +13,7 @@ export { default as SpeechPlaygroundOpenAICompatible } from './speech-playground
 export { default as SpeechPlayground } from './speech-playground.vue'
 
 export { default as SpeechProviderSettings } from './speech-provider-settings.vue'
+export { default as StreamingSpeechControls } from './streaming-speech-controls.vue'
 export { default as TranscriptionPlayground } from './transcription-playground.vue'
 
 export { default as TranscriptionProviderSettings } from './transcription-provider-settings.vue'
